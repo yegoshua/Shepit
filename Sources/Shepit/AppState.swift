@@ -164,7 +164,7 @@ final class AppState: ObservableObject {
             do {
                 let text = try await transcriber.transcribe(samples, language: language.whisperCode)
                 guard !text.isEmpty else {
-                    overlay.show(.failure("Нічого не розпізнано"))
+                    overlay.show(.failure("нічого не розпізнано"))
                     status = .idle
                     return
                 }
@@ -173,7 +173,7 @@ final class AppState: ObservableObject {
                 overlay.show(.success)
                 status = .idle
             } catch {
-                overlay.show(.failure("Нічого не розпізнано"))
+                overlay.show(.failure("нічого не розпізнано"))
                 status = .error("Розпізнавання: \(error.localizedDescription)")
             }
         }
