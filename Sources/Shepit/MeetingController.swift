@@ -18,6 +18,8 @@ final class MeetingController: ObservableObject {
         var microphone: URL
         /// nil when system audio couldn't be captured, so "Others" can't be heard.
         var systemAudio: URL?
+        /// JSON list of dictation intervals, saved next to the audio so they outlive a crash.
+        var dictation: URL
     }
 
     /// System audio capture uses Core Audio process taps, which arrived in macOS 14.2.
@@ -49,7 +51,7 @@ final class MeetingController: ObservableObject {
 
     private let preferences: Preferences
     private let transcriber: Transcriber
-    private let recorder = MeetingRecorder()
+    private let recorder: MeetingRecorder
     private let notifier = MeetingNotifier()
     private var session = MeetingSession()
     /// `CallDetector` on macOS 14.2+; typed loosely because stored properties can't be availability-gated.
@@ -57,6 +59,9 @@ final class MeetingController: ObservableObject {
     /// Name written to the meeting file for the recording being made: the detected call app or `manualSource`.
     private var source = MeetingController.manualSource
     private var subscriptions: Set<AnyCancellable> = []
+    /// Push-to-talk dictations made during the current recording; their "Me" speech stays out of the transcript.
+    private var dictation: [DictationInterval] = []
+    private var dictationStartedAt: Date?
     private var ticker: Timer?
     /// Keeps the Mac from idle-sleeping from Start until the transcript is written.
     private var activity: NSObjectProtocol?
@@ -71,9 +76,10 @@ final class MeetingController: ObservableObject {
         if case .recording = phase { true } else { false }
     }
 
-    init(preferences: Preferences, transcriber: Transcriber) {
+    init(preferences: Preferences, transcriber: Transcriber, microphone: SharedMicrophone) {
         self.preferences = preferences
         self.transcriber = transcriber
+        recorder = MeetingRecorder(microphone: microphone)
         notifier.onStillRecordingAnswer = { [weak self] keepRecording in
             MainActor.assumeIsolated { self?.answerStillRecording(keepRecording) }
         }
@@ -133,6 +139,36 @@ final class MeetingController: ObservableObject {
 
     func dismissOffer() {
         send(.offerDismissed)
+    }
+
+    /// Dictation reports every push-to-talk recording, whether or not a meeting is running.
+    func dictationStarted() {
+        dictationStartedAt = Date()
+    }
+
+    func dictationEnded() {
+        guard case .recording(let startedAt, let tracks) = phase else {
+            dictationStartedAt = nil
+            return
+        }
+        closeDictation(meetingStartedAt: startedAt, endingAt: Date().timeIntervalSince(startedAt), tracks: tracks)
+    }
+
+    /// Adds the dictation in progress, if any, to this meeting's intervals and saves them.
+    private func closeDictation(meetingStartedAt startedAt: Date, endingAt end: TimeInterval, tracks: Tracks) {
+        defer { dictationStartedAt = nil }
+        guard let began = dictationStartedAt else { return }
+        // A dictation already running when the meeting started counts from the meeting's first second.
+        dictation.append(DictationInterval(start: max(0, began.timeIntervalSince(startedAt)), end: end))
+        saveDictation(to: tracks.dictation)
+    }
+
+    private func saveDictation(to url: URL) {
+        do {
+            try JSONEncoder().encode(dictation).write(to: url, options: .atomic)
+        } catch {
+            Log.info("dictation intervals not saved: \(error)")
+        }
     }
 
     /// Monotonic clock for the session; unaffected by the user changing the system time.
@@ -210,7 +246,7 @@ final class MeetingController: ObservableObject {
         let base: URL
         do {
             base = try Self.recordingBaseURL(for: startedAt)
-            tracks = Tracks(microphone: Self.trackURL(base, "mic"))
+            tracks = Tracks(microphone: Self.trackURL(base, "mic"), dictation: Self.sidecarURL(base, "dictation"))
             try recorder.startMicrophone(writingTo: tracks.microphone, preferredDeviceID: preferences.microphoneID)
         } catch {
             Log.info("meeting recorder failed to start: \(error)")
@@ -241,6 +277,9 @@ final class MeetingController: ObservableObject {
         )
         phase = .recording(startedAt: startedAt, tracks: tracks)
         elapsedSeconds = 0
+        dictation = []
+        // Written up front, so a recording without dictation is told apart from one whose intervals were lost.
+        saveDictation(to: tracks.dictation)
         send(.started)
 
         let ticker = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
@@ -262,7 +301,10 @@ final class MeetingController: ObservableObject {
         recorder.stop()
         othersWarning = nil
         let duration = Date().timeIntervalSince(startedAt)
+        // Still dictating when the meeting stopped: that dictation runs to the end.
+        closeDictation(meetingStartedAt: startedAt, endingAt: duration, tracks: tracks)
         let source = source
+        let dictation = dictation
         Log.info(String(format: "meeting recording stopped: %.0f s", duration))
         phase = .processing
 
@@ -273,7 +315,7 @@ final class MeetingController: ObservableObject {
                 activity = nil
             }
             do {
-                let file = try await transcribe(tracks, source: source, startedAt: startedAt, duration: duration)
+                let file = try await transcribe(tracks, dictation: dictation, source: source, startedAt: startedAt, duration: duration)
                 Log.info("meeting transcript written: \(file.path)")
                 notifier.transcriptReady(file)
             } catch {
@@ -285,7 +327,8 @@ final class MeetingController: ObservableObject {
         }
     }
 
-    private func transcribe(_ tracks: Tracks, source: String, startedAt: Date, duration: TimeInterval) async throws -> URL {
+    private func transcribe(_ tracks: Tracks, dictation: [DictationInterval], source: String,
+                            startedAt: Date, duration: TimeInterval) async throws -> URL {
         guard await transcriber.waitUntilLoaded() else { throw TranscriberError.modelNotLoaded }
         let language = preferences.meetingLanguage.whisperCode
         let me = try await transcriber.transcribeFile(at: tracks.microphone, language: language)
@@ -302,7 +345,7 @@ final class MeetingController: ObservableObject {
             startDate: startedAt, duration: duration, app: source,
             language: me.language, notes: .none, audio: .kept
         )
-        let markdown = MeetingDocument.markdown(me: me.segments, others: others, metadata: metadata)
+        let markdown = MeetingDocument.markdown(me: me.segments, others: others, dictation: dictation, metadata: metadata)
 
         let folder = preferences.meetingsFolder
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -325,6 +368,10 @@ final class MeetingController: ObservableObject {
 
     private static func trackURL(_ base: URL, _ track: String) -> URL {
         base.deletingLastPathComponent().appendingPathComponent("\(base.lastPathComponent) \(track).caf")
+    }
+
+    private static func sidecarURL(_ base: URL, _ name: String) -> URL {
+        base.deletingLastPathComponent().appendingPathComponent("\(base.lastPathComponent) \(name).json")
     }
 
     /// Appends " 2", " 3"… so a second meeting in the same minute never overwrites the first.

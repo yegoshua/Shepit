@@ -13,6 +13,21 @@ public struct TranscriptSegment: Equatable, Sendable {
     }
 }
 
+/// A push-to-talk dictation made while a meeting was recording, in seconds from the meeting start.
+public struct DictationInterval: Codable, Equatable, Sendable {
+    public var start: TimeInterval
+    public var end: TimeInterval
+
+    public init(start: TimeInterval, end: TimeInterval) {
+        self.start = start
+        self.end = end
+    }
+
+    func overlaps(_ segment: TranscriptSegment) -> Bool {
+        segment.start < end && segment.end > start
+    }
+}
+
 public struct MeetingMetadata: Equatable, Sendable {
     public enum NotesStatus: String, Sendable {
         case none
@@ -46,7 +61,9 @@ public struct MeetingMetadata: Equatable, Sendable {
 /// Turns a finished meeting recording into its Markdown file.
 public enum MeetingDocument {
     /// `me` is the microphone track; `others` is system audio, empty when it wasn't captured.
-    public static func markdown(me: [TranscriptSegment], others: [TranscriptSegment] = [], metadata: MeetingMetadata,
+    /// Words dictated during the meeting are private, so "Me" segments overlapping `dictation` are left out.
+    public static func markdown(me: [TranscriptSegment], others: [TranscriptSegment] = [],
+                                dictation: [DictationInterval] = [], metadata: MeetingMetadata,
                                 timeZone: TimeZone = .current) -> String {
         var lines = [
             "---",
@@ -63,7 +80,9 @@ public enum MeetingDocument {
             "",
         ]
         let others = others.filter(isSpeech)
-        let me = me.filter { isSpeech($0) && !isEcho($0, of: others) }
+        let me = me.filter { segment in
+            isSpeech(segment) && !isEcho(segment, of: others) && !dictation.contains { $0.overlaps(segment) }
+        }
         let spoken = me.map { ($0, "Me") } + others.map { ($0, "Others") }
         for (segment, speaker) in spoken.sorted(by: { $0.0.start < $1.0.start }) {
             let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)

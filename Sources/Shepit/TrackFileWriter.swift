@@ -4,24 +4,15 @@ import AVFoundation
 /// Uncompressed CAF stays readable up to the last written buffer if the app is killed
 /// mid-recording; AAC in CAF or M4A would lose the packet table and be unplayable.
 final class TrackFileWriter {
-    private let file: AVAudioFile
-    private let converter: AVAudioConverter
-    private let targetFormat: AVAudioFormat
+    /// Released on `close()`, which is what writes the final CAF header.
+    private var file: AVAudioFile?
+    private let resampler: Resampler
     private let lock = NSLock()
-    private var isClosed = false
     private var loggedWriteError = false
     private var peakDecibels: Float = -.infinity
 
     init(url: URL, inputFormat: AVAudioFormat) throws {
-        guard let targetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32, sampleRate: AudioRecorder.sampleRate, channels: 1, interleaved: false
-        ), let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            throw NSError(domain: "TrackFileWriter", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Непідтримуваний аудіоформат"])
-        }
-        converter.downmix = true
-        self.targetFormat = targetFormat
-        self.converter = converter
+        resampler = try Resampler(inputFormat: inputFormat)
         file = try AVAudioFile(
             forWriting: url,
             settings: [
@@ -38,7 +29,7 @@ final class TrackFileWriter {
     /// Safe to call from an audio thread; buffers arriving after `close()` are ignored.
     func write(_ buffer: AVAudioPCMBuffer) {
         lock.withLock {
-            guard !isClosed, let output = AudioRecorder.resample(buffer, with: converter, to: targetFormat) else { return }
+            guard let file, let output = resampler.convert(buffer) else { return }
             if let channel = output.floatChannelData?[0], output.frameLength > 0 {
                 let decibels = AudioRecorder.decibels(UnsafeBufferPointer(start: channel, count: Int(output.frameLength)))
                 peakDecibels = max(peakDecibels, decibels)
@@ -60,7 +51,8 @@ final class TrackFileWriter {
         }
     }
 
+    /// Finalizes the file now, even if an audio callback still holds this writer.
     func close() {
-        lock.withLock { isClosed = true }
+        lock.withLock { file = nil }
     }
 }

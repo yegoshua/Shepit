@@ -150,6 +150,75 @@ import ShepitCore
         """))
     }
 
+    // MARK: Dictation during a meeting
+
+    @Test func meSegmentsInsideDictationAreDroppedWhileOthersStay() {
+        let markdown = MeetingDocument.markdown(
+            me: [
+                TranscriptSegment(start: 2, end: 5, text: "Так, погоджуюсь."),
+                TranscriptSegment(start: 21, end: 24, text: "Привіт, напиши мені пароль від сервера."),
+            ],
+            others: [TranscriptSegment(start: 22, end: 26, text: "Тоді переходимо до бюджету.")],
+            dictation: [DictationInterval(start: 20, end: 25)],
+            metadata: Self.metadata(),
+            timeZone: Self.kyiv
+        )
+
+        #expect(markdown.hasSuffix("""
+        ## Transcript
+
+        **[00:02] Me:** Так, погоджуюсь.
+
+        **[00:22] Others:** Тоді переходимо до бюджету.
+
+        """))
+    }
+
+    /// Whisper segments rarely line up with key presses; any overlap may carry dictated words.
+    @Test func meSegmentPartlyOverlappingDictationIsDropped() {
+        let markdown = MeetingDocument.markdown(
+            me: [
+                TranscriptSegment(start: 17, end: 21, text: "Зараз гляну і приватне повідомлення."),
+                TranscriptSegment(start: 29, end: 33, text: "секрет наприкінці і вже для всіх"),
+            ],
+            dictation: [DictationInterval(start: 20, end: 30)],
+            metadata: Self.metadata(),
+            timeZone: Self.kyiv
+        )
+
+        #expect(markdown.hasSuffix("## Transcript\n"))
+    }
+
+    @Test func meSegmentOnlyTouchingDictationIsKept() {
+        let markdown = MeetingDocument.markdown(
+            me: [
+                TranscriptSegment(start: 15, end: 20, text: "Перед диктуванням."),
+                TranscriptSegment(start: 30, end: 34, text: "Після диктування."),
+            ],
+            dictation: [DictationInterval(start: 20, end: 30)],
+            metadata: Self.metadata(),
+            timeZone: Self.kyiv
+        )
+
+        #expect(markdown.contains("**[00:15] Me:** Перед диктуванням."))
+        #expect(markdown.contains("**[00:30] Me:** Після диктування."))
+    }
+
+    @Test func everyDictationIntervalIsApplied() {
+        let markdown = MeetingDocument.markdown(
+            me: [
+                TranscriptSegment(start: 11, end: 13, text: "Перше приватне."),
+                TranscriptSegment(start: 40, end: 45, text: "Для зустрічі."),
+                TranscriptSegment(start: 91, end: 93, text: "Друге приватне."),
+            ],
+            dictation: [DictationInterval(start: 90, end: 95), DictationInterval(start: 10, end: 14)],
+            metadata: Self.metadata(),
+            timeZone: Self.kyiv
+        )
+
+        #expect(markdown.hasSuffix("## Transcript\n\n**[00:40] Me:** Для зустрічі.\n"))
+    }
+
     @Test func fileIsNamedFromDateTimeAndSource() {
         #expect(MeetingDocument.fileName(startDate: Self.startDate, app: "Zoom", timeZone: Self.kyiv)
             == "2026-09-13 14-30 Zoom.md")

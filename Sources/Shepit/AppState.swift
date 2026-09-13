@@ -59,7 +59,8 @@ final class AppState: ObservableObject {
     let meetingsWindow: MeetingsWindow
     var overlayModel: OverlayModel { overlay.model }
 
-    private let recorder = AudioRecorder()
+    private let microphone = SharedMicrophone()
+    private let recorder: AudioRecorder
     private let transcriber = Transcriber()
     private let overlay = RecordingOverlay()
     private var pushToTalk = PushToTalk()
@@ -70,7 +71,8 @@ final class AppState: ObservableObject {
     private var isTranscribing = false
 
     init() {
-        meeting = MeetingController(preferences: preferences, transcriber: transcriber)
+        recorder = AudioRecorder(microphone: microphone)
+        meeting = MeetingController(preferences: preferences, transcriber: transcriber, microphone: microphone)
         meetingsWindow = MeetingsWindow(preferences: preferences)
         meeting.onOpenMeeting = { [weak self] file in
             MainActor.assumeIsolated { self?.meetingsWindow.show(selecting: file) }
@@ -209,6 +211,7 @@ final class AppState: ObservableObject {
             Log.info("recorder failed to start: \(error)")
             return false
         }
+        meeting.dictationStarted()
         recordingStartedAt = Date()
         elapsedSeconds = 0
         isHandsFree = false
@@ -236,6 +239,8 @@ final class AppState: ObservableObject {
     private func abortRecording() {
         stopTicker()
         _ = recorder.stop()
+        // Even cancelled dictation was spoken aloud, so it stays out of the meeting too.
+        meeting.dictationEnded()
         overlay.hide()
         status = .idle
     }
@@ -243,6 +248,7 @@ final class AppState: ObservableObject {
     private func finishRecording() {
         stopTicker()
         let samples = recorder.stop()
+        meeting.dictationEnded()
         playSound("Pop")
 
         isTranscribing = true

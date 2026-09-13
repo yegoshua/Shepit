@@ -3,23 +3,23 @@ import AVFoundation
 /// Records a meeting as separate track files: the microphone ("Me") and, when allowed,
 /// system audio ("Others").
 final class MeetingRecorder {
-    private var engine = AVAudioEngine()
+    private let microphone: SharedMicrophone
+    private var microphoneConsumerID: UUID?
     private var microphoneWriter: TrackFileWriter?
     /// `SystemAudioTap` on macOS 14.2+; typed loosely because stored properties can't be availability-gated.
     private var systemAudio: AnyObject?
 
+    init(microphone: SharedMicrophone) {
+        self.microphone = microphone
+    }
+
+    /// Shares the microphone with dictation, so pressing the hotkey mid-meeting never interrupts this track.
     func startMicrophone(writingTo url: URL, preferredDeviceID: String?) throws {
-        engine = AudioRecorder.makeEngine(preferredDeviceID: preferredDeviceID)
-        let input = engine.inputNode
-        let writer = try TrackFileWriter(url: url, inputFormat: input.outputFormat(forBus: 0))
-        input.installTap(onBus: 0, bufferSize: 4096, format: nil) { buffer, _ in writer.write(buffer) }
-        engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            input.removeTap(onBus: 0)
-            writer.close()
-            throw error
+        var writer: TrackFileWriter?
+        microphoneConsumerID = try microphone.attach(preferredDeviceID: preferredDeviceID) { inputFormat in
+            let trackWriter = try TrackFileWriter(url: url, inputFormat: inputFormat)
+            writer = trackWriter
+            return { buffer in trackWriter.write(buffer) }
         }
         microphoneWriter = writer
     }
@@ -41,9 +41,8 @@ final class MeetingRecorder {
     }
 
     func stop() {
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        // Each file's CAF header is finalized once its last capture callback lets go of the writer.
+        if let microphoneConsumerID { microphone.detach(microphoneConsumerID) }
+        microphoneConsumerID = nil
         microphoneWriter?.close()
         microphoneWriter = nil
         if #available(macOS 14.2, *), let tap = systemAudio as? SystemAudioTap {
