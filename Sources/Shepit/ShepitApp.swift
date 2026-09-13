@@ -18,8 +18,8 @@ struct ShepitApp: App {
     }
 }
 
-/// Microphone icon normally; a filled jade timer capsule while dictating (design 5b/6b)
-/// and a red one while a meeting is being recorded.
+/// Shepit bars normally (framed while a meeting is processed); a filled jade timer capsule
+/// while dictating (design 5b/6b) and a red one while a meeting is being recorded.
 private struct MenuBarLabel: View {
     @ObservedObject var state: AppState
     @ObservedObject var meeting: MeetingController
@@ -30,9 +30,21 @@ private struct MenuBarLabel: View {
         } else if meeting.isRecording {
             Image(nsImage: TimerCapsule.meetingImage(text: TimerLabel.format(TimeInterval(meeting.elapsedSeconds))))
         } else if meeting.isProcessing && !meeting.isRecording && state.status == .idle {
-            Image(systemName: "waveform")
+            brand("ShepitFramedTemplate", fallback: "waveform")
+        } else if state.status == .idle {
+            brand("ShepitTemplate", fallback: state.status.symbol)
         } else {
-            Image(systemName: state.status == .idle ? "mic" : state.status.symbol)
+            Image(systemName: state.status.symbol)
+        }
+    }
+
+    /// The `Template` suffix makes AppKit tint the image for the menu bar; `swift run` has no bundle
+    /// resources, so fall back to the SF Symbol there.
+    @ViewBuilder private func brand(_ name: String, fallback: String) -> some View {
+        if let image = NSImage(named: name) {
+            Image(nsImage: image)
+        } else {
+            Image(systemName: fallback)
         }
     }
 }
@@ -88,7 +100,10 @@ struct MenuContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                if Bundle.main.bundleURL.pathExtension == "app" {
+                    Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 16, height: 16)
+                }
                 Text("Shepit").font(.system(size: 13, weight: .semibold)).tracking(-0.1)
                 Spacer()
                 StatusChip(status: state.status, theme: theme)
