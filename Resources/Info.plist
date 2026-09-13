@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>dev.yegor.voicetype</string>
+    <string>dev.yegor.shepit</string>
     <key>CFBundleName</key>
-    <string>VoiceType</string>
+    <string>Shepit</string>
     <key>CFBundleExecutable</key>
-    <string>VoiceType</string>
+    <string>Shepit</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -19,6 +19,6 @@
     <key>LSUIElement</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>VoiceType записує голос, поки ви тримаєте гарячу клавішу, і перетворює його на текст локально.</string>
+    <string>Shepit записує голос, поки ви тримаєте гарячу клавішу, і перетворює його на текст локально.</string>
 </dict>
 </plist>

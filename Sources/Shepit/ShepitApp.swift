@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct VoiceTypeApp: App {
+struct ShepitApp: App {
     @StateObject private var state = AppState()
 
     var body: some Scene {
@@ -19,7 +19,7 @@ struct MenuContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("VoiceType").font(.headline)
+            Text("Shepit").font(.headline)
 
             Label(state.status.title, systemImage: state.status.symbol)
                 .foregroundStyle(state.status.isError ? .red : .primary)

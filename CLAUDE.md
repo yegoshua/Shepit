@@ -7,9 +7,12 @@ Shepit — a macOS menu-bar dictation app: hold a hotkey, speak, and the recogni
 Xcode is not required — everything builds with SwiftPM and the Command Line Tools.
 
 ```bash
-./scripts/bundle.sh && open build/VoiceType.app   # build and run the .app
-swift build -c release                            # compile only
+./scripts/bundle.sh && open build/Shepit.app   # build and run the .app
+swift build -c release                         # compile only
+./scripts/test.sh                              # run tests (Swift Testing)
 ```
+
+Pure, framework-free logic lives in the `ShepitCore` target and is tested there; `Shepit` holds the AppKit/AVFoundation/WhisperKit adapters.
 
 Ad-hoc code signing makes macOS forget the Accessibility permission after every rebuild; re-enable it in System Settings → Privacy & Security → Accessibility.
 
