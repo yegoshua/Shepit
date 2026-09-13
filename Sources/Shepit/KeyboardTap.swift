@@ -15,6 +15,11 @@ final class KeyboardTap {
     /// Set when an Esc press was swallowed, so its auto-repeats and release are swallowed too.
     private var isSwallowingEscape = false
 
+    /// Chord that toggles meeting recording; its key presses are swallowed.
+    var meetingShortcut = MeetingShortcut.none
+    /// Called on the main thread when the meeting shortcut is pressed.
+    var onMeetingShortcut: (() -> Void)?
+
     var hotkey: HotkeyKey {
         didSet { if hotkey != oldValue { isHotkeyDown = false } }
     }
@@ -65,6 +70,10 @@ final class KeyboardTap {
             guard down != isHotkeyDown else { break }
             isHotkeyDown = down
             _ = handler(down ? .keyDown : .keyUp, Self.typedAt(event))
+
+        case .keyDown where meetingShortcut.matches(keyCode: keyCode, flags: event.flags.rawValue):
+            if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 { onMeetingShortcut?() }
+            return nil
 
         case .keyDown where keyCode == Self.escapeKeyCode:
             if event.getIntegerValueField(.keyboardEventAutorepeat) != 0 {

@@ -6,9 +6,9 @@ struct ShepitApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContent(state: state, preferences: state.preferences, overlay: state.overlayModel)
+            MenuContent(state: state, preferences: state.preferences, overlay: state.overlayModel, meeting: state.meeting)
         } label: {
-            MenuBarLabel(state: state)
+            MenuBarLabel(state: state, meeting: state.meeting)
         }
         .menuBarExtraStyle(.window)
 
@@ -18,13 +18,19 @@ struct ShepitApp: App {
     }
 }
 
-/// Microphone icon normally; a filled jade timer capsule while recording (design 5b/6b).
+/// Microphone icon normally; a filled jade timer capsule while dictating (design 5b/6b)
+/// and a red one while a meeting is being recorded.
 private struct MenuBarLabel: View {
     @ObservedObject var state: AppState
+    @ObservedObject var meeting: MeetingController
 
     var body: some View {
         if state.status == .recording {
             Image(nsImage: TimerCapsule.image(text: TimerLabel.format(TimeInterval(state.elapsedSeconds))))
+        } else if meeting.isRecording {
+            Image(nsImage: TimerCapsule.meetingImage(text: TimerLabel.format(TimeInterval(meeting.elapsedSeconds))))
+        } else if meeting.phase == .processing && state.status == .idle {
+            Image(systemName: "waveform")
         } else {
             Image(systemName: state.status == .idle ? "mic" : state.status.symbol)
         }
@@ -38,7 +44,17 @@ private enum TimerCapsule {
             ? NSColor(srgbRed: 0x38 / 255, green: 0xD6 / 255, blue: 0x9A / 255, alpha: 0.9)
             : NSColor(srgbRed: 0x0F / 255, green: 0x8F / 255, blue: 0x5F / 255, alpha: 1)
         let ink = dark ? NSColor(srgbRed: 0x08 / 255, green: 0x15 / 255, blue: 0x0F / 255, alpha: 1) : .white
+        return image(text: text, fill: fill, ink: ink)
+    }
 
+    /// Red dot on a neutral capsule, so a meeting reads as "recording" without looking like dictation.
+    static func meetingImage(text: String) -> NSImage {
+        let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return image(text: text, fill: (dark ? NSColor.white : .black).withAlphaComponent(0.12),
+                     ink: dark ? .white : .black, dot: .systemRed)
+    }
+
+    private static func image(text: String, fill: NSColor, ink: NSColor, dot: NSColor? = nil) -> NSImage {
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium),
             .foregroundColor: ink,
@@ -49,7 +65,7 @@ private enum TimerCapsule {
         let image = NSImage(size: size, flipped: false) { rect in
             fill.setFill()
             NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).fill()
-            ink.setFill()
+            (dot ?? ink).setFill()
             NSBezierPath(ovalIn: NSRect(x: 8, y: (rect.height - 5) / 2, width: 5, height: 5)).fill()
             label.draw(at: NSPoint(x: 19, y: (rect.height - label.size().height) / 2))
             return true
@@ -63,6 +79,7 @@ struct MenuContent: View {
     @ObservedObject var state: AppState
     @ObservedObject var preferences: Preferences
     @ObservedObject var overlay: OverlayModel
+    @ObservedObject var meeting: MeetingController
     @Environment(\.openSettings) private var openSettings
     @Environment(\.colorScheme) private var colorScheme
 
@@ -125,6 +142,9 @@ struct MenuContent: View {
                 MenuDivider()
             }
 
+            meetingRows
+            MenuDivider()
+
             if !state.hasAccessibility {
                 MenuRow("Надати доступ Accessibility…") { state.requestAccessibility() }
             }
@@ -134,7 +154,7 @@ struct MenuContent: View {
                 openSettings()
             }
             .keyboardShortcut(",")
-            if !isRecording {
+            if !isRecording && meeting.phase == .idle {
                 MenuRow("Вийти", shortcut: "⌘Q") { NSApp.terminate(nil) }
                     .keyboardShortcut("q")
             }
@@ -142,6 +162,32 @@ struct MenuContent: View {
         .padding(4)
         .frame(width: 272)
         .tint(Color.shepitAccent)
+    }
+
+    @ViewBuilder
+    private var meetingRows: some View {
+        let shortcut = preferences.meetingShortcut == .none ? nil : preferences.meetingShortcut.symbol
+        if !MeetingController.isSupported {
+            MenuNote(title: "Записати зустріч", detail: MeetingController.unsupportedReason)
+        } else {
+            switch meeting.phase {
+            case .idle:
+                MenuRow("Записати зустріч", shortcut: shortcut) { meeting.start() }
+            case .recording:
+                MenuRow("Зупинити зустріч · \(TimerLabel.format(TimeInterval(meeting.elapsedSeconds)))", shortcut: shortcut) {
+                    meeting.stop()
+                }
+            case .processing:
+                MenuNote(title: "Розшифровую зустріч…", detail: nil)
+            }
+            if let error = meeting.lastError, meeting.phase == .idle {
+                Text(error)
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(EdgeInsets(top: 0, leading: 10, bottom: 5, trailing: 10))
+            }
+        }
     }
 
     private var recordingStrip: some View {
@@ -214,6 +260,24 @@ private struct MenuDivider: View {
             .frame(height: 0.5)
             .padding(.horizontal, 10)
             .padding(.vertical, 3)
+    }
+}
+
+/// Inactive menu line with an optional explanation underneath.
+private struct MenuNote: View {
+    let title: String
+    let detail: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.system(size: 13)).foregroundStyle(.secondary)
+            if let detail {
+                Text(detail).font(.system(size: 11)).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
     }
 }
 

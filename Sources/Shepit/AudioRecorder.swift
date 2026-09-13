@@ -17,19 +17,7 @@ final class AudioRecorder {
 
     /// Records from the device with this CoreAudio UID when it's connected, else from the system default.
     func start(preferredDeviceID: String?) throws {
-        engine = AVAudioEngine()
-        if let preferredDeviceID {
-            if let device = Self.audioDeviceID(forUID: preferredDeviceID) {
-                do {
-                    try Self.select(device, on: engine.inputNode)
-                } catch {
-                    Log.info("microphone \(preferredDeviceID) could not be selected, using system default: \(error)")
-                    engine = AVAudioEngine()
-                }
-            } else {
-                Log.info("microphone \(preferredDeviceID) not connected, using system default")
-            }
-        }
+        engine = Self.makeEngine(preferredDeviceID: preferredDeviceID)
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
         guard let targetFormat = AVAudioFormat(
@@ -46,22 +34,9 @@ final class AudioRecorder {
         }
 
         input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            guard let self else { return }
-            let capacity = AVAudioFrameCount(Double(buffer.frameLength) * Self.sampleRate / inputFormat.sampleRate) + 1
-            guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
-
-            var consumed = false
-            converter.convert(to: output, error: nil) { _, status in
-                if consumed {
-                    status.pointee = .noDataNow
-                    return nil
-                }
-                consumed = true
-                status.pointee = .haveData
-                return buffer
-            }
-
-            guard let channel = output.floatChannelData?[0] else { return }
+            guard let self,
+                  let output = Self.resample(buffer, with: converter, to: targetFormat),
+                  let channel = output.floatChannelData?[0] else { return }
             let chunk = UnsafeBufferPointer(start: channel, count: Int(output.frameLength))
             self.lock.withLock { self.samples.append(contentsOf: chunk) }
 
@@ -89,6 +64,40 @@ final class AudioRecorder {
             Log.info(String(format: "recording stopped: %.1f s, peak %.1f dBFS", Double(samples.count) / Self.sampleRate, peakDecibels))
             return samples
         }
+    }
+
+    /// A fresh engine recording from the device with this CoreAudio UID when it's connected, else from the system default.
+    static func makeEngine(preferredDeviceID: String?) -> AVAudioEngine {
+        let engine = AVAudioEngine()
+        guard let preferredDeviceID else { return engine }
+        guard let device = audioDeviceID(forUID: preferredDeviceID) else {
+            Log.info("microphone \(preferredDeviceID) not connected, using system default")
+            return engine
+        }
+        do {
+            try select(device, on: engine.inputNode)
+            return engine
+        } catch {
+            Log.info("microphone \(preferredDeviceID) could not be selected, using system default: \(error)")
+            return AVAudioEngine()
+        }
+    }
+
+    /// Converts one captured buffer; the converter keeps resampler state between calls.
+    static func resample(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter, to format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * format.sampleRate / buffer.format.sampleRate) + 1
+        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
+        var consumed = false
+        converter.convert(to: output, error: nil) { _, status in
+            if consumed {
+                status.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            status.pointee = .haveData
+            return buffer
+        }
+        return output
     }
 
     private static func audioDeviceID(forUID uid: String) -> AudioDeviceID? {

@@ -55,6 +55,7 @@ final class AppState: ObservableObject {
     @Published private(set) var elapsedSeconds = 0
     let preferences = Preferences()
     let microphones = Microphones()
+    let meeting: MeetingController
     var overlayModel: OverlayModel { overlay.model }
 
     private let recorder = AudioRecorder()
@@ -68,8 +69,12 @@ final class AppState: ObservableObject {
     private var isTranscribing = false
 
     init() {
+        meeting = MeetingController(preferences: preferences, transcriber: transcriber)
         keyboard = KeyboardTap(hotkey: preferences.hotkey) { [weak self] event, time in
             MainActor.assumeIsolated { self?.handle(event, at: time) ?? false }
+        }
+        keyboard?.onMeetingShortcut = { [weak self] in
+            MainActor.assumeIsolated { self?.meeting.toggle() }
         }
         recorder.onLevel = { [weak self] level in
             MainActor.assumeIsolated { self?.overlay.push(level: level) }
@@ -93,6 +98,11 @@ final class AppState: ObservableObject {
             .sink { [weak self] key in
                 self?.keyboard?.hotkey = key
                 self?.overlay.stopKeySymbol = key.symbol
+            }
+            .store(in: &subscriptions)
+        preferences.$meetingShortcut
+            .sink { [weak self] shortcut in
+                self?.keyboard?.meetingShortcut = MeetingController.isSupported ? shortcut : .none
             }
             .store(in: &subscriptions)
         preferences.$handsFreeEnabled

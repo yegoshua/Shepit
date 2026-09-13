@@ -53,6 +53,12 @@ extension HotkeyKey: Identifiable {
     }
 }
 
+extension MeetingShortcut: Identifiable {
+    public var id: String { rawValue }
+
+    var title: String { self == .none ? "Вимкнено" : symbol }
+}
+
 /// User-configurable settings persisted in UserDefaults.
 @MainActor
 final class Preferences: ObservableObject {
@@ -65,6 +71,12 @@ final class Preferences: ObservableObject {
     @Published var language: Language { didSet { defaults.set(language.rawValue, forKey: "language") } }
     /// CoreAudio device UID of the preferred microphone; nil means the system default.
     @Published var microphoneID: String? { didSet { defaults.set(microphoneID, forKey: "microphoneID") } }
+    @Published var meetingShortcut: MeetingShortcut { didSet { defaults.set(meetingShortcut.rawValue, forKey: "meetingShortcut") } }
+    /// Where meeting Markdown files are saved.
+    @Published var meetingsFolder: URL { didSet { defaults.set(meetingsFolder.path, forKey: "meetingsFolder") } }
+
+    static let defaultMeetingsFolder = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Documents/Shepit Meetings", isDirectory: true)
 
     init() {
         defaults.register(defaults: ["handsFreeEnabled": true, "soundsEnabled": true])
@@ -74,6 +86,9 @@ final class Preferences: ObservableObject {
         appearance = defaults.string(forKey: "appearance").flatMap(AppearanceMode.init) ?? .system
         language = defaults.string(forKey: "language").flatMap(Language.init) ?? .auto
         microphoneID = defaults.string(forKey: "microphoneID")
+        meetingShortcut = defaults.string(forKey: "meetingShortcut").flatMap(MeetingShortcut.init) ?? .controlOptionM
+        meetingsFolder = defaults.string(forKey: "meetingsFolder").map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? Self.defaultMeetingsFolder
     }
 }
 

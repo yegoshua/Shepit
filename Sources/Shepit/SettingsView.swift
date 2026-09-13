@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import ShepitCore
 
@@ -11,6 +12,8 @@ struct SettingsView: View {
                 .tabItem { Label("Загальне", systemImage: "gearshape") }
             RecordingSettings(preferences: preferences, microphones: microphones)
                 .tabItem { Label("Запис", systemImage: "mic") }
+            MeetingSettings(preferences: preferences)
+                .tabItem { Label("Зустрічі", systemImage: "person.2") }
         }
         .frame(width: 520)
         .tint(Color.shepitAccent)
@@ -96,6 +99,49 @@ private struct RecordingSettings: View {
     private var missingID: String? {
         guard let id = preferences.microphoneID, !microphones.available.contains(where: { $0.id == id }) else { return nil }
         return id
+    }
+}
+
+private struct MeetingSettings: View {
+    @ObservedObject var preferences: Preferences
+
+    var body: some View {
+        Form {
+            if !MeetingController.isSupported {
+                Label(MeetingController.unsupportedReason, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+            } else {
+                Picker("Гаряча клавіша зустрічі", selection: $preferences.meetingShortcut) {
+                    ForEach(MeetingShortcut.allCases) { Text($0.title).tag($0) }
+                }
+                LabeledContent("Папка зустрічей") {
+                    HStack {
+                        Text(preferences.meetingsFolder.path(percentEncoded: false)
+                            .replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(.secondary)
+                        Button("Змінити…", action: chooseFolder)
+                    }
+                }
+                Text("Markdown-файли зустрічей зберігаються тут. Аудіо лишається в Application Support.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = preferences.meetingsFolder
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url {
+            preferences.meetingsFolder = url
+        }
     }
 }
 
