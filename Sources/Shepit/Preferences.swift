@@ -140,8 +140,33 @@ enum LaunchAtLogin {
     static func set(_ enabled: Bool) throws {
         if enabled {
             try SMAppService.mainApp.register()
+            UserDefaults.standard.set(Bundle.main.bundlePath, forKey: "loginItemPath")
         } else {
             try SMAppService.mainApp.unregister()
+        }
+    }
+
+    static var isAnotherInstanceRunning: Bool {
+        guard let id = Bundle.main.bundleIdentifier else { return false }
+        let me = ProcessInfo.processInfo.processIdentifier
+        return NSRunningApplication.runningApplications(withBundleIdentifier: id)
+            .contains { $0.processIdentifier != me }
+    }
+
+    /// The login item remembers the bundle that registered it, so one enabled from a dev build
+    /// keeps launching that build; the copy in /Applications takes it over.
+    static func pointAtInstalledCopy() {
+        let path = Bundle.main.bundlePath
+        let key = "loginItemPath"
+        // Registering shows a "Background item added" notice, so only when the path actually changed.
+        guard isEnabled, path.hasPrefix("/Applications/"), UserDefaults.standard.string(forKey: key) != path else { return }
+        do {
+            try SMAppService.mainApp.unregister()
+            try SMAppService.mainApp.register()
+            UserDefaults.standard.set(path, forKey: key)
+            Log.info("login item now launches \(path)")
+        } catch {
+            Log.info("login item not moved to \(Bundle.main.bundlePath): \(error)")
         }
     }
 }

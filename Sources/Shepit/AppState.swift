@@ -71,6 +71,12 @@ final class AppState: ObservableObject {
     private var isTranscribing = false
 
     init() {
+        // Two copies would both paste every dictation and record every meeting twice.
+        if LaunchAtLogin.isAnotherInstanceRunning {
+            Log.info("another Shepit is already running; quitting \(Bundle.main.bundlePath)")
+            exit(0)
+        }
+        LaunchAtLogin.pointAtInstalledCopy()
         recorder = AudioRecorder(microphone: microphone)
         meeting = MeetingController(preferences: preferences, transcriber: transcriber, microphone: microphone)
         meetingsWindow = MeetingsWindow(preferences: preferences, meeting: meeting)
