@@ -57,6 +57,15 @@ import ShepitCore
         """)
     }
 
+    @Test func recordingIDIsWrittenAfterAudioStatus() {
+        var metadata = Self.metadata()
+        metadata.recording = "2026-09-13 14-30-05"
+        let markdown = MeetingDocument.markdown(me: [], metadata: metadata, timeZone: Self.kyiv)
+
+        #expect(markdown.contains("audio: kept\nrecording: 2026-09-13 14-30-05\n---\n"))
+        #expect(MeetingDocument.frontmatterValue("recording", in: markdown) == "2026-09-13 14-30-05")
+    }
+
     static let durations: [(TimeInterval, String)] = [
         (0, "0m"), (29, "0m"), (31, "1m"), (2_830, "47m"), (3_600, "1h 0m"), (5_740, "1h 36m"),
     ]

@@ -74,11 +74,30 @@ extension MeetingDocument {
 
     /// When the meeting started, from the frontmatter `date` field.
     public static func meetingDate(of markdown: String, timeZone: TimeZone = .current) -> Date? {
-        let lines = markdown.components(separatedBy: "\n")
-        let prefix = "date: "
-        guard let line = lines[..<bodyStart(lines)].first(where: { $0.hasPrefix(prefix) }) else { return nil }
-        let value = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+        guard let value = frontmatterValue("date", in: markdown) else { return nil }
         return formatter(frontmatterDatePattern, timeZone).date(from: value)
+    }
+
+    /// The value of a top-level frontmatter field, e.g. `audio`.
+    public static func frontmatterValue(_ key: String, in markdown: String) -> String? {
+        let lines = markdown.components(separatedBy: "\n")
+        let prefix = key + ":"
+        guard let line = lines[..<bodyStart(lines)].first(where: { $0.hasPrefix(prefix) }) else { return nil }
+        return line.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Sets a frontmatter field, adding it (or the whole block) when missing; every other byte stays as it was.
+    public static func settingFrontmatter(_ key: String, to value: String, in markdown: String) -> String {
+        var lines = markdown.components(separatedBy: "\n")
+        let end = bodyStart(lines)
+        guard end > 0 else { return (["---", "\(key): \(value)", "---"] + lines).joined(separator: "\n") }
+        let prefix = key + ":"
+        if let index = lines[..<end].firstIndex(where: { $0.hasPrefix(prefix) }) {
+            lines[index] = "\(key): \(value)"
+        } else {
+            lines.insert("\(key): \(value)", at: end - 1)
+        }
+        return lines.joined(separator: "\n")
     }
 
     private static let transcriptHeading = "## Transcript"

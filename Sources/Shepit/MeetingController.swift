@@ -10,26 +10,16 @@ final class MeetingController: ObservableObject {
         case idle
         /// Waiting on the system audio explanation or permission dialog.
         case preparing
-        case recording(startedAt: Date, tracks: Tracks)
+        case recording(id: String, startedAt: Date, tracks: RecordingStore.Tracks)
     }
 
-    /// A stopped meeting waiting for, or going through, transcription.
-    private struct StoppedMeeting {
-        var tracks: Tracks
-        var dictation: [DictationInterval]
-        var source: String
-        var startedAt: Date
-        var duration: TimeInterval
+    /// A recording waiting for, or going through, transcription.
+    private struct Job {
+        var id: String
+        /// The meeting file to rewrite when re-transcribing; nil writes a new one.
+        var target: URL?
         /// The microphone track's transcript, kept so a paused meeting doesn't transcribe it twice.
         var me: (segments: [TranscriptSegment], language: String)?
-    }
-
-    struct Tracks: Equatable {
-        var microphone: URL
-        /// nil when system audio couldn't be captured, so "Others" can't be heard.
-        var systemAudio: URL?
-        /// JSON list of dictation intervals, saved next to the audio so they outlive a crash.
-        var dictation: URL
     }
 
     /// System audio capture uses Core Audio process taps, which arrived in macOS 14.2.
@@ -53,6 +43,8 @@ final class MeetingController: ObservableObject {
     @Published private(set) var offer: Offer?
     /// Stopped meetings waiting for or going through transcription.
     @Published private(set) var processingCount = 0
+    /// Every recording whose audio is still on disk.
+    @Published private(set) var recordings: [RecordingManifest] = []
 
     enum Offer: Equatable {
         /// `app` began using the microphone: record the call?
@@ -66,8 +58,10 @@ final class MeetingController: ObservableObject {
     private let recorder: MeetingRecorder
     private let notifier = MeetingNotifier()
     private var session = MeetingSession()
-    private var queue = MeetingProcessingQueue<UUID>()
-    private var stoppedMeetings: [UUID: StoppedMeeting] = [:]
+    private var queue = MeetingProcessingQueue<String>()
+    private var jobs: [String: Job] = [:]
+    /// Deletes expired audio now and then; the sweep is cheap, so hourly keeps it close to "daily" across sleeps.
+    private var sweeper: Timer?
     private var processingTask: Task<Void, Never>?
     /// `CallDetector` on macOS 14.2+; typed loosely because stored properties can't be availability-gated.
     private var callDetector: AnyObject?
@@ -93,6 +87,21 @@ final class MeetingController: ObservableObject {
 
     var isProcessing: Bool { processingCount > 0 }
 
+    /// Recordings without a transcript that aren't recording or queued: unfinished after a quit or crash, or failed.
+    var untranscribed: [RecordingManifest] {
+        recordings.filter { ($0.isUnfinished || $0.status == .failed) && !isBusy($0.id) }
+    }
+
+    /// Unfinished recordings left by a quit or crash, waiting for the user to finish them.
+    var unfinished: [RecordingManifest] { untranscribed.filter(\.isUnfinished) }
+
+    /// Queued for transcription or still being recorded.
+    func isBusy(_ id: String) -> Bool {
+        if jobs[id] != nil { return true }
+        if case .recording(let recording, _, _) = phase { return recording == id }
+        return false
+    }
+
     init(preferences: Preferences, transcriber: Transcriber, microphone: SharedMicrophone) {
         self.preferences = preferences
         self.transcriber = transcriber
@@ -103,7 +112,18 @@ final class MeetingController: ObservableObject {
         notifier.onOfferAnswer = { [weak self] accepted in
             MainActor.assumeIsolated { accepted ? self?.acceptOffer() : self?.dismissOffer() }
         }
+        notifier.onRecoveryAnswer = { [weak self] accepted in
+            MainActor.assumeIsolated { if accepted { self?.finishUnfinished() } }
+        }
         if #available(macOS 14.2, *) { startCallDetection() }
+        guard Self.isSupported else { return }
+        recoverUnfinished()
+        sweepAudio()
+        let sweeper = Timer(timeInterval: 60 * 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sweepAudio() }
+        }
+        RunLoop.main.add(sweeper, forMode: .common)
+        self.sweeper = sweeper
     }
 
     @available(macOS 14.2, *)
@@ -157,7 +177,7 @@ final class MeetingController: ObservableObject {
     }
 
     func dictationEnded() {
-        guard case .recording(let startedAt, let tracks) = phase else {
+        guard case .recording(_, let startedAt, let tracks) = phase else {
             dictationStartedAt = nil
             return
         }
@@ -165,7 +185,7 @@ final class MeetingController: ObservableObject {
     }
 
     /// Adds the dictation in progress, if any, to this meeting's intervals and saves them.
-    private func closeDictation(meetingStartedAt startedAt: Date, endingAt end: TimeInterval, tracks: Tracks) {
+    private func closeDictation(meetingStartedAt startedAt: Date, endingAt end: TimeInterval, tracks: RecordingStore.Tracks) {
         defer { dictationStartedAt = nil }
         guard let began = dictationStartedAt else { return }
         // A dictation already running when the meeting started counts from the meeting's first second.
@@ -252,11 +272,10 @@ final class MeetingController: ObservableObject {
 
     private func beginRecording(skipOthersReason: String?) {
         let startedAt = Date()
-        var tracks: Tracks
-        let base: URL
+        let id = RecordingStore.id(for: startedAt)
+        var tracks: RecordingStore.Tracks
         do {
-            base = try Self.recordingBaseURL(for: startedAt)
-            tracks = Tracks(microphone: Self.trackURL(base, "mic"), dictation: Self.sidecarURL(base, "dictation"))
+            tracks = try RecordingStore.tracks(id)
             try recorder.startMicrophone(writingTo: tracks.microphone, preferredDeviceID: preferences.microphoneID)
         } catch {
             Log.info("meeting recorder failed to start: \(error)")
@@ -268,8 +287,8 @@ final class MeetingController: ObservableObject {
 
         othersWarning = skipOthersReason
         if skipOthersReason == nil, #available(macOS 14.2, *) {
-            let url = Self.trackURL(base, "system")
             do {
+                let url = try RecordingStore.systemAudioURL(id)
                 try recorder.startSystemAudio(writingTo: url)
                 tracks.systemAudio = url
             } catch {
@@ -282,7 +301,10 @@ final class MeetingController: ObservableObject {
         if let othersWarning { notifier.othersUnavailable(othersWarning) }
         Log.info("meeting recording started: \(tracks.microphone.path), system audio: \(tracks.systemAudio?.path ?? "none")")
         lastError = nil
-        phase = .recording(startedAt: startedAt, tracks: tracks)
+        // Saved before anything else can fail, so a crash from here on leaves a recording to finish.
+        RecordingStore.save(RecordingManifest(id: id, startDate: startedAt, app: source, status: .recording))
+        phase = .recording(id: id, startedAt: startedAt, tracks: tracks)
+        reloadRecordings()
         updateActivity()
         sendToQueue(.recordingStarted)
         elapsedSeconds = 0
@@ -293,7 +315,7 @@ final class MeetingController: ObservableObject {
 
         let ticker = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, case .recording(let startedAt, _) = self.phase else { return }
+                guard let self, case .recording(_, let startedAt, _) = self.phase else { return }
                 self.elapsedSeconds = Int(Date().timeIntervalSince(startedAt))
                 self.send(.level(decibels: self.recorder.takeLoudestLevel()))
                 self.send(.tick)
@@ -304,7 +326,7 @@ final class MeetingController: ObservableObject {
     }
 
     private func finishRecording() {
-        guard case .recording(let startedAt, let tracks) = phase else { return }
+        guard case .recording(let id, let startedAt, let tracks) = phase else { return }
         ticker?.invalidate()
         ticker = nil
         recorder.stop()
@@ -313,17 +335,23 @@ final class MeetingController: ObservableObject {
         // Still dictating when the meeting stopped: that dictation runs to the end.
         closeDictation(meetingStartedAt: startedAt, endingAt: duration, tracks: tracks)
         Log.info(String(format: "meeting recording stopped: %.0f s", duration))
+        RecordingStore.save(RecordingManifest(
+            id: id, startDate: startedAt, duration: duration, app: source, status: .stopped
+        ))
         phase = .idle
-
-        let id = UUID()
-        stoppedMeetings[id] = StoppedMeeting(
-            tracks: tracks, dictation: dictation, source: source, startedAt: startedAt, duration: duration
-        )
-        sendToQueue(.enqueued(id))
+        enqueue(Job(id: id))
         sendToQueue(.recordingStopped)
     }
 
-    private func sendToQueue(_ event: MeetingProcessingQueue<UUID>.Event) {
+    // MARK: Processing
+
+    private func enqueue(_ job: Job) {
+        guard !isBusy(job.id) else { return }
+        jobs[job.id] = job
+        sendToQueue(.enqueued(job.id))
+    }
+
+    private func sendToQueue(_ event: MeetingProcessingQueue<String>.Event) {
         for command in queue.handle(event) {
             switch command {
             case .run(let id): process(id)
@@ -334,6 +362,7 @@ final class MeetingController: ObservableObject {
         }
         processingCount = queue.count
         updateActivity()
+        reloadRecordings()
     }
 
     private func updateActivity() {
@@ -348,19 +377,24 @@ final class MeetingController: ObservableObject {
         }
     }
 
-    private func process(_ id: UUID) {
+    private func process(_ id: String) {
         processingTask = Task {
             do {
                 let file = try await transcribe(id)
-                stoppedMeetings[id] = nil
+                let target = jobs.removeValue(forKey: id)?.target
+                updateManifest(id) { $0.status = .transcribed; $0.error = nil }
                 Log.info("meeting transcript written: \(file.path)")
-                notifier.transcriptReady(file)
+                if target == nil { notifier.transcriptReady(file) }
                 sendToQueue(.finished(id))
             } catch where Task.isCancelled {
                 sendToQueue(.interrupted(id))
             } catch {
                 // The audio stays in Application Support so nothing is lost.
-                stoppedMeetings[id] = nil
+                let job = jobs.removeValue(forKey: id)
+                // A failed re-transcription leaves the earlier transcript, and its audio's status, as they were.
+                if job?.target == nil {
+                    updateManifest(id) { $0.status = .failed; $0.error = error.localizedDescription }
+                }
                 Log.info("meeting processing failed: \(error)")
                 lastError = "Зустріч не розшифровано: \(error.localizedDescription)"
                 notifier.failed(error.localizedDescription)
@@ -369,21 +403,25 @@ final class MeetingController: ObservableObject {
         }
     }
 
-    private func transcribe(_ id: UUID) async throws -> URL {
-        guard let meeting = stoppedMeetings[id] else { throw CancellationError() }
+    private func transcribe(_ id: String) async throws -> URL {
+        guard let job = jobs[id], let manifest = RecordingStore.all().first(where: { $0.id == id }) else {
+            throw RecordingError.missing
+        }
+        guard RecordingStore.hasAudio(id) else { throw RecordingError.missing }
         guard await transcriber.waitUntilLoaded() else { throw TranscriberError.modelNotLoaded }
         try Task.checkCancellation()
+        let tracks = try RecordingStore.tracks(id)
         let language = preferences.meetingLanguage.whisperCode
         let me: (segments: [TranscriptSegment], language: String)
-        if let done = meeting.me {
+        if let done = job.me {
             me = done
         } else {
-            me = try await transcriber.transcribeFile(at: meeting.tracks.microphone, language: language)
+            me = try await transcriber.transcribeFile(at: tracks.microphone, language: language)
             try Task.checkCancellation()
-            stoppedMeetings[id]?.me = me
+            jobs[id]?.me = me
         }
         var others: [TranscriptSegment] = []
-        if let systemAudio = meeting.tracks.systemAudio {
+        if let systemAudio = tracks.systemAudio {
             do {
                 others = try await transcriber.transcribeFile(at: systemAudio, language: language).segments
                 try Task.checkCancellation()
@@ -395,40 +433,124 @@ final class MeetingController: ObservableObject {
             }
         }
         let metadata = MeetingMetadata(
-            startDate: meeting.startedAt, duration: meeting.duration, app: meeting.source,
-            language: me.language, notes: .none, audio: .kept
+            startDate: manifest.startDate,
+            duration: manifest.duration ?? RecordingStore.recordedDuration(id) ?? 0,
+            app: manifest.app, language: me.language, notes: .none, audio: .kept, recording: id
         )
-        let markdown = MeetingDocument.markdown(
-            me: me.segments, others: others, dictation: meeting.dictation, metadata: metadata
+        var markdown = MeetingDocument.markdown(
+            me: me.segments, others: others, dictation: RecordingStore.dictation(id), metadata: metadata
         )
 
+        if let target = job.target, let existing = try? String(contentsOf: target, encoding: .utf8) {
+            // Re-transcribing replaces the transcript but keeps the name the user gave the meeting.
+            if let title = MeetingDocument.title(of: existing) { markdown = MeetingDocument.retitled(markdown, to: title) }
+            // Written in place so the file keeps its creation date.
+            try markdown.write(to: target, atomically: false, encoding: .utf8)
+            return target
+        }
         let folder = preferences.meetingsFolder
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let file = try Self.unusedURL(
-            in: folder, named: MeetingDocument.fileName(startDate: meeting.startedAt, app: meeting.source)
+            in: folder, named: MeetingDocument.fileName(startDate: manifest.startDate, app: manifest.app)
         )
         try markdown.write(to: file, atomically: true, encoding: .utf8)
         return file
     }
 
-    /// Shared stem of a meeting's track files, e.g. `…/Recordings/2026-09-13 14-30-05`.
-    private static func recordingBaseURL(for date: Date) throws -> URL {
-        let folder = try FileManager.default
-            .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("Shepit/Recordings", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HH-mm-ss"
-        return folder.appendingPathComponent(formatter.string(from: date))
+    // MARK: Recordings on disk
+
+    enum RecordingError: LocalizedError {
+        case missing
+
+        var errorDescription: String? { "аудіо цього запису вже немає" }
     }
 
-    private static func trackURL(_ base: URL, _ track: String) -> URL {
-        base.deletingLastPathComponent().appendingPathComponent("\(base.lastPathComponent) \(track).caf")
+    /// The recording a meeting file was transcribed from, while its audio is still on disk.
+    func recordingID(ofMeeting markdown: String) -> String? {
+        guard let id = MeetingDocument.frontmatterValue("recording", in: markdown), RecordingStore.hasAudio(id) else {
+            return nil
+        }
+        return id
     }
 
-    private static func sidecarURL(_ base: URL, _ name: String) -> URL {
-        base.deletingLastPathComponent().appendingPathComponent("\(base.lastPathComponent) \(name).json")
+    /// Transcribes a meeting's audio again into the same file, e.g. after changing the meeting language.
+    func retranscribe(meetingFile: URL) {
+        guard let markdown = try? String(contentsOf: meetingFile, encoding: .utf8),
+              let id = recordingID(ofMeeting: markdown)
+        else { return }
+        enqueue(Job(id: id, target: meetingFile))
+    }
+
+    /// Transcribes an unfinished or failed recording into a new meeting file.
+    func transcribe(recording id: String) {
+        guard RecordingStore.hasAudio(id) else { return }
+        enqueue(Job(id: id))
+    }
+
+    /// Deletes a recording that has no transcript; the user decided it isn't worth keeping.
+    func deleteRecording(_ id: String) {
+        guard !isBusy(id) else { return }
+        RecordingStore.delete(id)
+        Log.info("recording deleted by user: \(id)")
+        reloadRecordings()
+    }
+
+    func finishUnfinished() {
+        notifier.dismissRecovery()
+        for recording in unfinished { enqueue(Job(id: recording.id)) }
+    }
+
+    /// Recordings still marked recording or stopped at launch were cut off by a quit or crash.
+    private func recoverUnfinished() {
+        for recording in RecordingStore.all() where recording.status == .recording {
+            // The tracks were written incrementally, so what reached the disk is the recording.
+            updateManifest(recording.id) {
+                $0.status = .stopped
+                $0.duration = RecordingStore.recordedDuration(recording.id)
+            }
+        }
+        reloadRecordings()
+        let count = unfinished.count
+        guard count > 0 else { return }
+        Log.info("unfinished recordings at launch: \(count)")
+        notifier.requestAuthorization()
+        notifier.offerRecovery(count: count)
+    }
+
+    /// Deletes the audio of meetings transcribed long enough ago and marks it deleted in their files.
+    func sweepAudio() {
+        let expired = AudioRetention.expired(RecordingStore.all(), now: Date()).filter { !isBusy($0.id) }
+        guard !expired.isEmpty else { return }
+        let folder = preferences.meetingsFolder
+        let files = ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension.lowercased() == "md" }
+            .compactMap { url in (try? String(contentsOf: url, encoding: .utf8)).map { (url, $0) } }
+        for recording in expired {
+            do {
+                for (url, markdown) in files where MeetingDocument.frontmatterValue("recording", in: markdown) == recording.id {
+                    let updated = MeetingDocument.settingFrontmatter("audio", to: MeetingMetadata.AudioStatus.deleted.rawValue, in: markdown)
+                    try updated.write(to: url, atomically: false, encoding: .utf8)
+                }
+            } catch {
+                // Try again next sweep rather than leave a file claiming audio that's gone.
+                Log.info("audio kept, meeting file not updated for \(recording.id): \(error)")
+                continue
+            }
+            RecordingStore.delete(recording.id)
+            Log.info("audio deleted after retention period: \(recording.id)")
+        }
+        reloadRecordings()
+    }
+
+    private func updateManifest(_ id: String, _ change: (inout RecordingManifest) -> Void) {
+        guard var manifest = RecordingStore.all().first(where: { $0.id == id }) else { return }
+        change(&manifest)
+        RecordingStore.save(manifest)
+    }
+
+    private func reloadRecordings() {
+        let loaded = RecordingStore.all()
+        if loaded != recordings { recordings = loaded }
     }
 
     /// Appends " 2", " 3"… so a second meeting in the same minute never overwrites the first.

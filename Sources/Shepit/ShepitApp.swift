@@ -211,6 +211,10 @@ struct MenuContent: View {
             case .preparing:
                 MenuNote(title: "Готую запис зустрічі…", detail: nil)
             }
+            if !meeting.unfinished.isEmpty {
+                MenuNote(title: "Незавершені записи: \(meeting.unfinished.count)", detail: "Shepit закрився, не розшифрувавши їх.")
+                MenuRow("Розшифрувати") { meeting.finishUnfinished() }
+            }
             if meeting.isProcessing {
                 MenuNote(title: processingTitle, detail: meeting.isRecording ? "Продовжу після зупинки запису." : nil)
             }

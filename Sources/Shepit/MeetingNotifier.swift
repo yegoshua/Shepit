@@ -13,6 +13,8 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// Called on the main thread with the answer to a call-detection offer: true accepts it.
     var onOfferAnswer: ((Bool) -> Void)?
+    /// Called on the main thread with the answer to "finish transcribing?" at launch: true finishes them.
+    var onRecoveryAnswer: ((Bool) -> Void)?
 
     private static let stillRecordingID = "still-recording"
     /// One slot for call offers, so a stop offer replaces a stale record offer and dismissal clears either.
@@ -22,6 +24,9 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
     private static let acceptAction = "accept"
     private static let declineAction = "decline"
     private static let stillRecordingCategory = "stillRecording"
+    private static let recoveryID = "unfinished-recordings"
+    private static let recoveryCategory = "recovery"
+    private static let finishAction = "finish"
     private static let keepAction = "keep"
     private static let stopAction = "stop"
 
@@ -61,6 +66,14 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
                 intentIdentifiers: [],
                 options: [.customDismissAction]
             ),
+            UNNotificationCategory(
+                identifier: Self.recoveryCategory,
+                actions: [
+                    UNNotificationAction(identifier: Self.finishAction, title: "Розшифрувати"),
+                    UNNotificationAction(identifier: Self.declineAction, title: "Пізніше"),
+                ],
+                intentIdentifiers: []
+            ),
         ])
     }
 
@@ -86,6 +99,18 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
     func dismissOffer() {
         center?.removeDeliveredNotifications(withIdentifiers: [Self.offerID])
         center?.removePendingNotificationRequests(withIdentifiers: [Self.offerID])
+    }
+
+    func offerRecovery(count: Int) {
+        let body = count == 1
+            ? "Є незавершений запис зустрічі — розшифрувати?"
+            : "Є незавершені записи зустрічей (\(count)) — розшифрувати?"
+        post(title: "Shepit закрився під час зустрічі", body: body, userInfo: [:],
+             identifier: Self.recoveryID, category: Self.recoveryCategory)
+    }
+
+    func dismissRecovery() {
+        center?.removeDeliveredNotifications(withIdentifiers: [Self.recoveryID])
     }
 
     func dismissStillRecording() {
@@ -131,10 +156,14 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
         case Self.keepAction: DispatchQueue.main.async { self.onStillRecordingAnswer?(true) }
         case Self.stopAction: DispatchQueue.main.async { self.onStillRecordingAnswer?(false) }
         case Self.acceptAction: DispatchQueue.main.async { self.onOfferAnswer?(true) }
+        case Self.finishAction: DispatchQueue.main.async { self.onRecoveryAnswer?(true) }
         case Self.declineAction, UNNotificationDismissActionIdentifier:
             if response.notification.request.identifier == Self.offerID {
                 DispatchQueue.main.async { self.onOfferAnswer?(false) }
             }
+        case UNNotificationDefaultActionIdentifier where response.notification.request.identifier == Self.recoveryID:
+            // Clicking the notification itself is as good as "finish".
+            DispatchQueue.main.async { self.onRecoveryAnswer?(true) }
         default: break
         }
         if let path = response.notification.request.content.userInfo[Self.fileKey] as? String {

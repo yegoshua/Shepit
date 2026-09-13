@@ -46,15 +46,18 @@ public struct MeetingMetadata: Equatable, Sendable {
     public var language: String
     public var notes: NotesStatus
     public var audio: AudioStatus
+    /// `RecordingManifest.id` of the audio this transcript came from.
+    public var recording: String?
 
     public init(startDate: Date, duration: TimeInterval, app: String, language: String,
-                notes: NotesStatus, audio: AudioStatus) {
+                notes: NotesStatus, audio: AudioStatus, recording: String? = nil) {
         self.startDate = startDate
         self.duration = duration
         self.app = app
         self.language = language
         self.notes = notes
         self.audio = audio
+        self.recording = recording
     }
 }
 
@@ -73,6 +76,7 @@ public enum MeetingDocument {
             "language: \(metadata.language)",
             "notes: \(metadata.notes.rawValue)",
             "audio: \(metadata.audio.rawValue)",
+        ] + (metadata.recording.map { ["recording: \($0)"] } ?? []) + [
             "---",
             "# Meeting \(format(metadata.startDate, "d MMM HH:mm", timeZone)) (\(metadata.app))",
             "",

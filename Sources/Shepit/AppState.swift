@@ -73,7 +73,7 @@ final class AppState: ObservableObject {
     init() {
         recorder = AudioRecorder(microphone: microphone)
         meeting = MeetingController(preferences: preferences, transcriber: transcriber, microphone: microphone)
-        meetingsWindow = MeetingsWindow(preferences: preferences)
+        meetingsWindow = MeetingsWindow(preferences: preferences, meeting: meeting)
         meeting.onOpenMeeting = { [weak self] file in
             MainActor.assumeIsolated { self?.meetingsWindow.show(selecting: file) }
         }

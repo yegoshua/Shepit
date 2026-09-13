@@ -6,10 +6,12 @@ import ShepitCore
 @MainActor
 final class MeetingsWindow: NSObject, NSWindowDelegate {
     let library: MeetingLibrary
+    private let meeting: MeetingController
     private var window: NSWindow?
 
-    init(preferences: Preferences) {
+    init(preferences: Preferences, meeting: MeetingController) {
         library = MeetingLibrary(preferences: preferences)
+        self.meeting = meeting
     }
 
     func show(selecting file: URL? = nil) {
@@ -36,7 +38,7 @@ final class MeetingsWindow: NSObject, NSWindowDelegate {
         window.title = "Зустрічі"
         window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 620, height: 380)
-        window.contentView = NSHostingView(rootView: MeetingsView(library: library).tint(Color.shepitAccent))
+        window.contentView = NSHostingView(rootView: MeetingsView(library: library, meeting: meeting).tint(Color.shepitAccent))
         window.center()
         window.setFrameAutosaveName("Meetings")
         window.delegate = self
@@ -46,25 +48,33 @@ final class MeetingsWindow: NSObject, NSWindowDelegate {
 
 private struct MeetingsView: View {
     @ObservedObject var library: MeetingLibrary
+    @ObservedObject var meeting: MeetingController
     @State private var renaming: MeetingItem?
+    @State private var deleting: RecordingManifest?
     @State private var newTitle = ""
     @State private var errorMessage: String?
 
     var body: some View {
         NavigationSplitView {
             List(selection: $library.selection) {
-                ForEach(library.items) { item in
-                    MeetingRow(item: item)
-                        .tag(item.url)
-                        .contextMenu {
-                            Button("Перейменувати…") { beginRename(item) }
-                            Button("Показати у Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
+                if !meeting.untranscribed.isEmpty {
+                    Section("Не розшифровані") {
+                        ForEach(meeting.untranscribed, id: \.id) { recording in
+                            UntranscribedRow(
+                                recording: recording,
+                                onTranscribe: { meeting.transcribe(recording: recording.id) },
+                                onDelete: { deleting = recording }
+                            )
                         }
+                    }
+                    Section("Зустрічі") { meetingRows }
+                } else {
+                    meetingRows
                 }
             }
             .navigationSplitViewColumnWidth(min: 220, ideal: 260)
             .overlay {
-                if library.items.isEmpty {
+                if library.items.isEmpty && meeting.untranscribed.isEmpty {
                     ContentUnavailableView {
                         Label("Зустрічей ще немає", systemImage: "person.2")
                     } description: {
@@ -78,8 +88,10 @@ private struct MeetingsView: View {
             if let item = library.selectedItem {
                 MeetingDetail(
                     item: item,
+                    retranscribe: retranscribeState(item),
                     onCopy: { copy(item) },
-                    onRename: { beginRename(item) }
+                    onRename: { beginRename(item) },
+                    onRetranscribe: { meeting.retranscribe(meetingFile: item.url) }
                 )
             } else {
                 Text("Оберіть зустріч").foregroundStyle(.secondary)
@@ -92,6 +104,12 @@ private struct MeetingsView: View {
         } message: { _ in
             Text("Файл буде перейменовано так само.")
         }
+        .alert("Видалити запис?", isPresented: isDeleting, presenting: deleting) { recording in
+            Button("Видалити", role: .destructive) { meeting.deleteRecording(recording.id) }
+            Button("Скасувати", role: .cancel) {}
+        } message: { _ in
+            Text("Аудіо цього запису буде видалено назавжди, розшифрувати його вже не вийде.")
+        }
         .alert("Не вдалося", isPresented: hasError) {
             Button("OK") {}
         } message: {
@@ -99,8 +117,28 @@ private struct MeetingsView: View {
         }
     }
 
+    private var meetingRows: some View {
+        ForEach(library.items) { item in
+            MeetingRow(item: item)
+                .tag(item.url)
+                .contextMenu {
+                    Button("Перейменувати…") { beginRename(item) }
+                    Button("Показати у Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
+                }
+        }
+    }
+
     private var isRenaming: Binding<Bool> {
         Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })
+    }
+
+    private var isDeleting: Binding<Bool> {
+        Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
+    }
+
+    private func retranscribeState(_ item: MeetingItem) -> MeetingDetail.Retranscribe {
+        guard let id = meeting.recordingID(ofMeeting: item.markdown) else { return .unavailable }
+        return meeting.isBusy(id) ? .queued : .available
     }
 
     private var hasError: Binding<Bool> {
@@ -160,11 +198,50 @@ private struct MeetingRow: View {
     }
 }
 
+private struct UntranscribedRow: View {
+    let recording: RecordingManifest
+    let onTranscribe: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(MeetingDateStyle.formatter.string(from: recording.startDate)) · \(recording.app)").lineLimit(1)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+            Button(action: onTranscribe) { Image(systemName: "arrow.clockwise") }
+                .buttonStyle(.borderless)
+                .help("Розшифрувати")
+            Button(action: onDelete) { Image(systemName: "trash") }
+                .buttonStyle(.borderless)
+                .help("Видалити запис")
+        }
+        .padding(.vertical, 2)
+        .contextMenu {
+            Button("Розшифрувати", action: onTranscribe)
+            Button("Видалити запис…", role: .destructive, action: onDelete)
+        }
+    }
+
+    private var detail: String {
+        if recording.isUnfinished { return "Не завершено — Shepit закрився" }
+        return "Помилка: \(recording.error ?? "невідома")"
+    }
+}
+
 private struct MeetingDetail: View {
+    enum Retranscribe { case available, queued, unavailable }
+
     let item: MeetingItem
+    let retranscribe: Retranscribe
     /// Returns whether the text reached the clipboard.
     let onCopy: () -> Bool
     let onRename: () -> Void
+    let onRetranscribe: () -> Void
     @State private var copied = false
 
     var body: some View {
@@ -188,6 +265,14 @@ private struct MeetingDetail: View {
                           systemImage: copied ? "checkmark" : "doc.on.clipboard")
                 }
                 .help("Скопіювати промпт для нотаток разом із транскриптом — встав у будь-який чатбот")
+                if retranscribe != .unavailable {
+                    Button(action: onRetranscribe) {
+                        Label(retranscribe == .queued ? "Розшифровується…" : "Розшифрувати знову",
+                              systemImage: "arrow.clockwise")
+                    }
+                    .disabled(retranscribe == .queued)
+                    .help("Розшифрувати аудіо ще раз мовою зустрічей з налаштувань; назва зустрічі збережеться")
+                }
                 Button(action: onRename) { Label("Перейменувати", systemImage: "pencil") }
                     .help("Перейменувати зустріч і файл")
                 Button { NSWorkspace.shared.activateFileViewerSelecting([item.url]) } label: {

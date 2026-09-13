@@ -171,4 +171,33 @@ import ShepitCore
     func meetingDateIsNilWhenMissingOrMalformed(markdown: String) {
         #expect(MeetingDocument.meetingDate(of: markdown, timeZone: Self.kyiv) == nil)
     }
+
+    // MARK: Frontmatter
+
+    @Test func frontmatterValueReadsAField() {
+        #expect(MeetingDocument.frontmatterValue("audio", in: Self.document) == "kept")
+        #expect(MeetingDocument.frontmatterValue("recording", in: Self.document) == nil)
+    }
+
+    @Test func frontmatterValueIgnoresTheBody() {
+        #expect(MeetingDocument.frontmatterValue("audio", in: "# Нотатки\naudio: kept\n") == nil)
+    }
+
+    @Test func markingAudioDeletedChangesOnlyThatLine() {
+        let updated = MeetingDocument.settingFrontmatter("audio", to: "deleted", in: Self.document)
+
+        #expect(updated == Self.document.replacingOccurrences(of: "audio: kept", with: "audio: deleted"))
+    }
+
+    @Test func missingFieldIsAddedAtTheEndOfTheFrontmatter() {
+        let markdown = "---\ndate: 2026-09-13T14:30\n---\n# Зустріч\n"
+
+        #expect(MeetingDocument.settingFrontmatter("audio", to: "deleted", in: markdown)
+            == "---\ndate: 2026-09-13T14:30\naudio: deleted\n---\n# Зустріч\n")
+    }
+
+    @Test func fileWithoutFrontmatterGetsOne() {
+        #expect(MeetingDocument.settingFrontmatter("audio", to: "deleted", in: "# Зустріч\n")
+            == "---\naudio: deleted\n---\n# Зустріч\n")
+    }
 }
