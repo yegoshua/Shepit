@@ -15,8 +15,14 @@ cp Resources/Info.plist "$APP/Contents/"
 # SwiftPM resource bundles of dependencies, if any.
 find "$BIN" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$APP/Contents/Resources/" \;
 
-# Ad-hoc signature: macOS forgets granted permissions after each rebuild.
-# Set SIGN_IDENTITY to a (self-signed) certificate name to keep them.
-codesign --force --deep --sign "${SIGN_IDENTITY:--}" --identifier dev.yegor.shepit "$APP"
+# A stable identity lets macOS keep Accessibility/Microphone permissions across rebuilds.
+# Create a self-signed "Code Signing" certificate named "Shepit Dev" in Keychain Access,
+# or point SIGN_IDENTITY at another one. Without it we fall back to ad-hoc signing.
+IDENTITY="${SIGN_IDENTITY:-Shepit Dev}"
+if ! security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
+    echo "warning: signing identity '$IDENTITY' not found, using ad-hoc signature (permissions reset on every rebuild)"
+    IDENTITY=-
+fi
+codesign --force --deep --sign "$IDENTITY" --identifier dev.yegor.shepit "$APP"
 
 echo "Built $APP"

@@ -14,7 +14,7 @@ swift build -c release                         # compile only
 
 Pure, framework-free logic lives in the `ShepitCore` target and is tested there; `Shepit` holds the AppKit/AVFoundation/WhisperKit adapters.
 
-Ad-hoc code signing makes macOS forget the Accessibility permission after every rebuild; re-enable it in System Settings → Privacy & Security → Accessibility.
+`bundle.sh` signs with the self-signed "Shepit Dev" code-signing certificate from the login keychain so macOS keeps Accessibility/Microphone permissions across rebuilds. Without it, it falls back to ad-hoc signing and the permissions reset on every rebuild. Startup diagnostics go to `~/Library/Logs/Shepit.log`.
 
 ## Agent skills
 
