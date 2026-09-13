@@ -114,6 +114,10 @@ private struct MeetingSettings: View {
                 Picker("Гаряча клавіша зустрічі", selection: $preferences.meetingShortcut) {
                     ForEach(MeetingShortcut.allCases) { Text($0.title).tag($0) }
                 }
+                Picker("Мова зустрічей", selection: $preferences.meetingLanguageOverride) {
+                    Text("Як для диктування · \(preferences.language.title)").tag(Language?.none)
+                    ForEach(Language.allCases) { Text($0.title).tag(Language?.some($0)) }
+                }
                 LabeledContent("Папка зустрічей") {
                     HStack {
                         Text(preferences.meetingsFolder.path(percentEncoded: false)

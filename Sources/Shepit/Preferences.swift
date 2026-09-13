@@ -69,6 +69,12 @@ final class Preferences: ObservableObject {
     @Published var soundsEnabled: Bool { didSet { defaults.set(soundsEnabled, forKey: "soundsEnabled") } }
     @Published var appearance: AppearanceMode { didSet { defaults.set(appearance.rawValue, forKey: "appearance") } }
     @Published var language: Language { didSet { defaults.set(language.rawValue, forKey: "language") } }
+    /// Meeting language chosen explicitly; nil means it follows the dictation language.
+    @Published var meetingLanguageOverride: Language? {
+        didSet { defaults.set(meetingLanguageOverride?.rawValue, forKey: "meetingLanguage") }
+    }
+    /// Language for meeting transcription. Tracks `language` unless the user picked one.
+    var meetingLanguage: Language { meetingLanguageOverride ?? language }
     /// CoreAudio device UID of the preferred microphone; nil means the system default.
     @Published var microphoneID: String? { didSet { defaults.set(microphoneID, forKey: "microphoneID") } }
     @Published var meetingShortcut: MeetingShortcut { didSet { defaults.set(meetingShortcut.rawValue, forKey: "meetingShortcut") } }
@@ -85,6 +91,7 @@ final class Preferences: ObservableObject {
         soundsEnabled = defaults.bool(forKey: "soundsEnabled")
         appearance = defaults.string(forKey: "appearance").flatMap(AppearanceMode.init) ?? .system
         language = defaults.string(forKey: "language").flatMap(Language.init) ?? .auto
+        meetingLanguageOverride = defaults.string(forKey: "meetingLanguage").flatMap(Language.init)
         microphoneID = defaults.string(forKey: "microphoneID")
         meetingShortcut = defaults.string(forKey: "meetingShortcut").flatMap(MeetingShortcut.init) ?? .controlOptionM
         meetingsFolder = defaults.string(forKey: "meetingsFolder").map { URL(fileURLWithPath: $0, isDirectory: true) }

@@ -177,7 +177,7 @@ final class MeetingController: ObservableObject {
 
     private func transcribe(_ tracks: Tracks, startedAt: Date, duration: TimeInterval) async throws -> URL {
         guard await transcriber.waitUntilLoaded() else { throw TranscriberError.modelNotLoaded }
-        let language = preferences.language.whisperCode
+        let language = preferences.meetingLanguage.whisperCode
         let me = try await transcriber.transcribeFile(at: tracks.microphone, language: language)
         var others: [TranscriptSegment] = []
         if let systemAudio = tracks.systemAudio {
