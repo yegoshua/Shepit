@@ -2,27 +2,27 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleIdentifier</key>
-    <string>dev.yegor.shepit</string>
-    <key>CFBundleName</key>
-    <string>Shepit</string>
-    <key>CFBundleExecutable</key>
-    <string>Shepit</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSAudioCaptureUsageDescription</key>
-    <string>Shepit записує звук дзвінка, щоб у транскрипті зустрічі були репліки інших учасників. Запис і розпізнавання лишаються на цьому Mac.</string>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>Shepit записує голос, поки ви тримаєте гарячу клавішу, і перетворює його на текст локально.</string>
+	<key>CFBundleExecutable</key>
+	<string>Shepit</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.yegor.shepit</string>
+	<key>CFBundleName</key>
+	<string>Shepit</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>2</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Shepit записує звук дзвінка, щоб у транскрипті зустрічі були репліки інших учасників. Запис і розпізнавання лишаються на цьому Mac.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Shepit записує голос, поки ви тримаєте гарячу клавішу, і перетворює його на текст локально.</string>
 </dict>
 </plist>
