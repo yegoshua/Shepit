@@ -1,9 +1,12 @@
 import AppKit
 import UserNotifications
 
-/// Posts meeting notifications; clicking "Transcript ready" opens the meeting file.
+/// Posts meeting notifications; clicking "Transcript ready" opens the meeting in the Meetings window.
 final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
     private static let fileKey = "meetingFile"
+
+    /// Called on the main thread when the user clicks a notification about a meeting file.
+    var onOpenMeeting: ((URL) -> Void)?
 
     /// UNUserNotificationCenter aborts outside an app bundle (e.g. `swift run`).
     private var center: UNUserNotificationCenter? {
@@ -48,7 +51,7 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         if let path = response.notification.request.content.userInfo[Self.fileKey] as? String {
-            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            DispatchQueue.main.async { self.onOpenMeeting?(URL(fileURLWithPath: path)) }
         }
         completionHandler()
     }

@@ -143,6 +143,7 @@ struct MenuContent: View {
             }
 
             meetingRows
+            MenuRow("Зустрічі…") { state.meetingsWindow.show() }
             MenuDivider()
 
             if !state.hasAccessibility {

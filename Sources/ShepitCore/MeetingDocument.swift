@@ -50,7 +50,7 @@ public enum MeetingDocument {
                                 timeZone: TimeZone = .current) -> String {
         var lines = [
             "---",
-            "date: \(format(metadata.startDate, "yyyy-MM-dd'T'HH:mm", timeZone))",
+            "date: \(format(metadata.startDate, frontmatterDatePattern, timeZone))",
             "duration: \(duration(metadata.duration))",
             "app: \(metadata.app)",
             "language: \(metadata.language)",
@@ -79,12 +79,18 @@ public enum MeetingDocument {
         return "\(format(startDate, "yyyy-MM-dd HH-mm", timeZone)) \(safeApp).md"
     }
 
-    private static func format(_ date: Date, _ pattern: String, _ timeZone: TimeZone) -> String {
+    static let frontmatterDatePattern = "yyyy-MM-dd'T'HH:mm"
+
+    static func formatter(_ pattern: String, _ timeZone: TimeZone) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = timeZone
         formatter.dateFormat = pattern
-        return formatter.string(from: date)
+        return formatter
+    }
+
+    private static func format(_ date: Date, _ pattern: String, _ timeZone: TimeZone) -> String {
+        formatter(pattern, timeZone).string(from: date)
     }
 
     /// Whole minutes, as `47m` or `1h 36m`.

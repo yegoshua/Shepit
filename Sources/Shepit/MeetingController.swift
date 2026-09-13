@@ -44,6 +44,12 @@ final class MeetingController: ObservableObject {
     /// Keeps the Mac from idle-sleeping from Start until the transcript is written.
     private var activity: NSObjectProtocol?
 
+    /// Opens a finished meeting, e.g. when its "Transcript ready" notification is clicked.
+    var onOpenMeeting: ((URL) -> Void)? {
+        get { notifier.onOpenMeeting }
+        set { notifier.onOpenMeeting = newValue }
+    }
+
     var isRecording: Bool {
         if case .recording = phase { true } else { false }
     }
@@ -196,7 +202,7 @@ final class MeetingController: ObservableObject {
 
         let folder = preferences.meetingsFolder
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let file = Self.unusedURL(in: folder, named: MeetingDocument.fileName(startDate: startedAt, app: Self.manualSource))
+        let file = try Self.unusedURL(in: folder, named: MeetingDocument.fileName(startDate: startedAt, app: Self.manualSource))
         try markdown.write(to: file, atomically: true, encoding: .utf8)
         return file
     }
@@ -218,14 +224,8 @@ final class MeetingController: ObservableObject {
     }
 
     /// Appends " 2", " 3"… so a second meeting in the same minute never overwrites the first.
-    private static func unusedURL(in folder: URL, named name: String) -> URL {
-        let base = (name as NSString).deletingPathExtension
-        var candidate = folder.appendingPathComponent(name)
-        var index = 2
-        while FileManager.default.fileExists(atPath: candidate.path) {
-            candidate = folder.appendingPathComponent("\(base) \(index).md")
-            index += 1
-        }
-        return candidate
+    private static func unusedURL(in folder: URL, named name: String) throws -> URL {
+        let existing = Set(try FileManager.default.contentsOfDirectory(atPath: folder.path))
+        return folder.appendingPathComponent(MeetingDocument.unusedFileName(name, existing: existing))
     }
 }

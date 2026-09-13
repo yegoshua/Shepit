@@ -56,6 +56,7 @@ final class AppState: ObservableObject {
     let preferences = Preferences()
     let microphones = Microphones()
     let meeting: MeetingController
+    let meetingsWindow: MeetingsWindow
     var overlayModel: OverlayModel { overlay.model }
 
     private let recorder = AudioRecorder()
@@ -70,6 +71,10 @@ final class AppState: ObservableObject {
 
     init() {
         meeting = MeetingController(preferences: preferences, transcriber: transcriber)
+        meetingsWindow = MeetingsWindow(preferences: preferences)
+        meeting.onOpenMeeting = { [weak self] file in
+            MainActor.assumeIsolated { self?.meetingsWindow.show(selecting: file) }
+        }
         keyboard = KeyboardTap(hotkey: preferences.hotkey) { [weak self] event, time in
             MainActor.assumeIsolated { self?.handle(event, at: time) ?? false }
         }

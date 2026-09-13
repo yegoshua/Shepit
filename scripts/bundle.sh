@@ -12,6 +12,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/Shepit" "$APP/Contents/MacOS/"
 cp Resources/Info.plist "$APP/Contents/"
+# Shared by "Copy with prompt" and local notes.
+cp Resources/NotesPrompt.md "$APP/Contents/Resources/"
 # SwiftPM resource bundles of dependencies, if any.
 find "$BIN" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$APP/Contents/Resources/" \;
 
