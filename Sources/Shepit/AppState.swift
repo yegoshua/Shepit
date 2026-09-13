@@ -49,8 +49,13 @@ final class AppState: ObservableObject {
     @Published var status: Status = .loadingModel("Завантаження моделі…")
     @Published var lastText = ""
     @Published var hasAccessibility = TextInserter.isTrusted
+    @Published private(set) var recordingStartedAt = Date()
+    @Published private(set) var isHandsFree = false
+    /// Whole seconds since recording started, for the menu bar timer capsule.
+    @Published private(set) var elapsedSeconds = 0
     let preferences = Preferences()
     let microphones = Microphones()
+    var overlayModel: OverlayModel { overlay.model }
 
     private let recorder = AudioRecorder()
     private let transcriber = Transcriber()
@@ -59,7 +64,6 @@ final class AppState: ObservableObject {
     private var keyboard: KeyboardTap?
     private var ticker: Timer?
     private var subscriptions: Set<AnyCancellable> = []
-    private var recordingStartedAt = Date()
     private var modelReady = false
     private var isTranscribing = false
 
@@ -82,6 +86,9 @@ final class AppState: ObservableObject {
     }
 
     private func observePreferences() {
+        preferences.$appearance
+            .sink { NSApp.appearance = $0.nsAppearance }
+            .store(in: &subscriptions)
         preferences.$hotkey
             .sink { [weak self] key in
                 self?.keyboard?.hotkey = key
@@ -141,6 +148,17 @@ final class AppState: ObservableObject {
 
     // MARK: - Push-to-talk
 
+    /// Menu equivalent of the hotkey: release finishes a hold, a press finishes hands-free.
+    func stopRecordingFromMenu() {
+        let now = ProcessInfo.processInfo.systemUptime
+        _ = handle(.keyUp, at: now)
+        if pushToTalk.isRecording { _ = handle(.keyDown, at: now) }
+    }
+
+    func cancelRecordingFromMenu() {
+        _ = handle(.escape, at: ProcessInfo.processInfo.systemUptime)
+    }
+
     /// Returns true when the key event should be swallowed.
     private func handle(_ event: PushToTalk.Event, at time: TimeInterval) -> Bool {
         guard modelReady, !isTranscribing else { return false }
@@ -157,7 +175,9 @@ final class AppState: ObservableObject {
     private func execute(_ command: PushToTalk.Command) -> Bool {
         switch command {
         case .start: return startRecording()
-        case .enterHandsFree: overlay.show(.recording(handsFree: true, startedAt: recordingStartedAt))
+        case .enterHandsFree:
+            isHandsFree = true
+            overlay.show(.recording(handsFree: true, startedAt: recordingStartedAt))
         case .finish: finishRecording()
         case .cancel, .discard: abortRecording()
         }
@@ -175,11 +195,17 @@ final class AppState: ObservableObject {
             return false
         }
         recordingStartedAt = Date()
+        elapsedSeconds = 0
+        isHandsFree = false
         status = .recording
         playSound("Tink")
         overlay.show(.recording(handsFree: false, startedAt: recordingStartedAt))
         let ticker = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { _ = self?.handle(.tick, at: ProcessInfo.processInfo.systemUptime) }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.elapsedSeconds = Int(Date().timeIntervalSince(self.recordingStartedAt))
+                _ = self.handle(.tick, at: ProcessInfo.processInfo.systemUptime)
+            }
         }
         // Common modes keep the hands-free limit ticking while menus are open.
         RunLoop.main.add(ticker, forMode: .common)

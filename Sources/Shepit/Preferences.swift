@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import Combine
 import ServiceManagement
@@ -17,6 +18,26 @@ enum Language: String, CaseIterable, Identifiable {
     }
     /// nil means Whisper detects the language itself.
     var whisperCode: String? { self == .auto ? nil : rawValue }
+}
+
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .system: "Системна"
+        case .light: "Світла"
+        case .dark: "Темна"
+        }
+    }
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
 }
 
 extension HotkeyKey: Identifiable {
@@ -40,6 +61,7 @@ final class Preferences: ObservableObject {
     @Published var hotkey: HotkeyKey { didSet { defaults.set(hotkey.rawValue, forKey: "hotkey") } }
     @Published var handsFreeEnabled: Bool { didSet { defaults.set(handsFreeEnabled, forKey: "handsFreeEnabled") } }
     @Published var soundsEnabled: Bool { didSet { defaults.set(soundsEnabled, forKey: "soundsEnabled") } }
+    @Published var appearance: AppearanceMode { didSet { defaults.set(appearance.rawValue, forKey: "appearance") } }
     @Published var language: Language { didSet { defaults.set(language.rawValue, forKey: "language") } }
     /// CoreAudio device UID of the preferred microphone; nil means the system default.
     @Published var microphoneID: String? { didSet { defaults.set(microphoneID, forKey: "microphoneID") } }
@@ -49,6 +71,7 @@ final class Preferences: ObservableObject {
         hotkey = defaults.string(forKey: "hotkey").flatMap(HotkeyKey.init) ?? .rightOption
         handsFreeEnabled = defaults.bool(forKey: "handsFreeEnabled")
         soundsEnabled = defaults.bool(forKey: "soundsEnabled")
+        appearance = defaults.string(forKey: "appearance").flatMap(AppearanceMode.init) ?? .system
         language = defaults.string(forKey: "language").flatMap(Language.init) ?? .auto
         microphoneID = defaults.string(forKey: "microphoneID")
     }

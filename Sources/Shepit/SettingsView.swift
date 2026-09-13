@@ -13,7 +13,7 @@ struct SettingsView: View {
                 .tabItem { Label("Запис", systemImage: "mic") }
         }
         .frame(width: 520)
-        .tint(Palette.jade)
+        .tint(Color.shepitAccent)
     }
 }
 
@@ -29,6 +29,9 @@ private struct GeneralSettings: View {
             }
 
             Section {
+                Picker("Тема", selection: $preferences.appearance) {
+                    ForEach(AppearanceMode.allCases) { Text($0.title).tag($0) }
+                }
                 Picker("Гаряча клавіша", selection: $preferences.hotkey) {
                     ForEach(HotkeyKey.allCases) { Text($0.title).tag($0) }
                 }
@@ -109,9 +112,8 @@ private struct PillPreview: View {
             levels: Self.levels,
             stopKeySymbol: hotkey.symbol
         )
-        .environment(\.colorScheme, .dark)
         .padding(.vertical, 28)
         .frame(maxWidth: .infinity)
-        .background(Color(red: 0.04, green: 0.045, blue: 0.045), in: RoundedRectangle(cornerRadius: 10))
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
     }
 }
