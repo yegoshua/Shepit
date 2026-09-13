@@ -11,7 +11,17 @@ final class MeetingController: ObservableObject {
         /// Waiting on the system audio explanation or permission dialog.
         case preparing
         case recording(startedAt: Date, tracks: Tracks)
-        case processing
+    }
+
+    /// A stopped meeting waiting for, or going through, transcription.
+    private struct StoppedMeeting {
+        var tracks: Tracks
+        var dictation: [DictationInterval]
+        var source: String
+        var startedAt: Date
+        var duration: TimeInterval
+        /// The microphone track's transcript, kept so a paused meeting doesn't transcribe it twice.
+        var me: (segments: [TranscriptSegment], language: String)?
     }
 
     struct Tracks: Equatable {
@@ -41,6 +51,8 @@ final class MeetingController: ObservableObject {
     @Published private(set) var stillRecordingPrompt: MeetingSession.PromptReason?
     /// The call-detection offer currently on screen.
     @Published private(set) var offer: Offer?
+    /// Stopped meetings waiting for or going through transcription.
+    @Published private(set) var processingCount = 0
 
     enum Offer: Equatable {
         /// `app` began using the microphone: record the call?
@@ -54,6 +66,9 @@ final class MeetingController: ObservableObject {
     private let recorder: MeetingRecorder
     private let notifier = MeetingNotifier()
     private var session = MeetingSession()
+    private var queue = MeetingProcessingQueue<UUID>()
+    private var stoppedMeetings: [UUID: StoppedMeeting] = [:]
+    private var processingTask: Task<Void, Never>?
     /// `CallDetector` on macOS 14.2+; typed loosely because stored properties can't be availability-gated.
     private var callDetector: AnyObject?
     /// Name written to the meeting file for the recording being made: the detected call app or `manualSource`.
@@ -63,7 +78,7 @@ final class MeetingController: ObservableObject {
     private var dictation: [DictationInterval] = []
     private var dictationStartedAt: Date?
     private var ticker: Timer?
-    /// Keeps the Mac from idle-sleeping from Start until the transcript is written.
+    /// Keeps the Mac from idle-sleeping while recording and while any meeting waits for its transcript.
     private var activity: NSObjectProtocol?
 
     /// Opens a finished meeting, e.g. when its "Transcript ready" notification is clicked.
@@ -75,6 +90,8 @@ final class MeetingController: ObservableObject {
     var isRecording: Bool {
         if case .recording = phase { true } else { false }
     }
+
+    var isProcessing: Bool { processingCount > 0 }
 
     init(preferences: Preferences, transcriber: Transcriber, microphone: SharedMicrophone) {
         self.preferences = preferences
@@ -93,13 +110,7 @@ final class MeetingController: ObservableObject {
     private func startCallDetection() {
         let detector = CallDetector(apps: preferences.callApps)
         detector.onEvents = { [weak self] events in
-            guard let self else { return }
-            for event in events {
-                // A previous meeting still being transcribed blocks a new recording for now,
-                // so an offer then could only fail; the calls that end are harmless to pass on.
-                if case .callStarted = event, phase == .processing { continue }
-                send(event)
-            }
+            for event in events { self?.send(event) }
         }
         preferences.$callApps
             .sink { [weak detector] apps in detector?.apps = apps }
@@ -114,12 +125,11 @@ final class MeetingController: ObservableObject {
         switch phase {
         case .idle: start()
         case .recording: stop()
-        case .preparing, .processing: break
+        case .preparing: break
         }
     }
 
     func start() {
-        // A previous meeting still being transcribed blocks a new one for now.
         guard Self.isSupported, phase == .idle else { return }
         send(.start)
     }
@@ -272,10 +282,9 @@ final class MeetingController: ObservableObject {
         if let othersWarning { notifier.othersUnavailable(othersWarning) }
         Log.info("meeting recording started: \(tracks.microphone.path), system audio: \(tracks.systemAudio?.path ?? "none")")
         lastError = nil
-        activity = ProcessInfo.processInfo.beginActivity(
-            options: [.idleSystemSleepDisabled, .userInitiated], reason: "Recording a meeting"
-        )
         phase = .recording(startedAt: startedAt, tracks: tracks)
+        updateActivity()
+        sendToQueue(.recordingStarted)
         elapsedSeconds = 0
         dictation = []
         // Written up front, so a recording without dictation is told apart from one whose intervals were lost.
@@ -303,53 +312,101 @@ final class MeetingController: ObservableObject {
         let duration = Date().timeIntervalSince(startedAt)
         // Still dictating when the meeting stopped: that dictation runs to the end.
         closeDictation(meetingStartedAt: startedAt, endingAt: duration, tracks: tracks)
-        let source = source
-        let dictation = dictation
         Log.info(String(format: "meeting recording stopped: %.0f s", duration))
-        phase = .processing
+        phase = .idle
 
-        Task {
-            defer {
-                phase = .idle
-                if let activity { ProcessInfo.processInfo.endActivity(activity) }
-                activity = nil
+        let id = UUID()
+        stoppedMeetings[id] = StoppedMeeting(
+            tracks: tracks, dictation: dictation, source: source, startedAt: startedAt, duration: duration
+        )
+        sendToQueue(.enqueued(id))
+        sendToQueue(.recordingStopped)
+    }
+
+    private func sendToQueue(_ event: MeetingProcessingQueue<UUID>.Event) {
+        for command in queue.handle(event) {
+            switch command {
+            case .run(let id): process(id)
+            case .interrupt(let id):
+                Log.info("meeting processing paused for a new recording: \(id)")
+                processingTask?.cancel()
             }
+        }
+        processingCount = queue.count
+        updateActivity()
+    }
+
+    private func updateActivity() {
+        let needed = isRecording || queue.hasWork
+        if needed, activity == nil {
+            activity = ProcessInfo.processInfo.beginActivity(
+                options: [.idleSystemSleepDisabled, .userInitiated], reason: "Recording or transcribing a meeting"
+            )
+        } else if !needed, let current = activity {
+            ProcessInfo.processInfo.endActivity(current)
+            activity = nil
+        }
+    }
+
+    private func process(_ id: UUID) {
+        processingTask = Task {
             do {
-                let file = try await transcribe(tracks, dictation: dictation, source: source, startedAt: startedAt, duration: duration)
+                let file = try await transcribe(id)
+                stoppedMeetings[id] = nil
                 Log.info("meeting transcript written: \(file.path)")
                 notifier.transcriptReady(file)
+                sendToQueue(.finished(id))
+            } catch where Task.isCancelled {
+                sendToQueue(.interrupted(id))
             } catch {
                 // The audio stays in Application Support so nothing is lost.
+                stoppedMeetings[id] = nil
                 Log.info("meeting processing failed: \(error)")
                 lastError = "Зустріч не розшифровано: \(error.localizedDescription)"
                 notifier.failed(error.localizedDescription)
+                sendToQueue(.finished(id))
             }
         }
     }
 
-    private func transcribe(_ tracks: Tracks, dictation: [DictationInterval], source: String,
-                            startedAt: Date, duration: TimeInterval) async throws -> URL {
+    private func transcribe(_ id: UUID) async throws -> URL {
+        guard let meeting = stoppedMeetings[id] else { throw CancellationError() }
         guard await transcriber.waitUntilLoaded() else { throw TranscriberError.modelNotLoaded }
+        try Task.checkCancellation()
         let language = preferences.meetingLanguage.whisperCode
-        let me = try await transcriber.transcribeFile(at: tracks.microphone, language: language)
+        let me: (segments: [TranscriptSegment], language: String)
+        if let done = meeting.me {
+            me = done
+        } else {
+            me = try await transcriber.transcribeFile(at: meeting.tracks.microphone, language: language)
+            try Task.checkCancellation()
+            stoppedMeetings[id]?.me = me
+        }
         var others: [TranscriptSegment] = []
-        if let systemAudio = tracks.systemAudio {
+        if let systemAudio = meeting.tracks.systemAudio {
             do {
                 others = try await transcriber.transcribeFile(at: systemAudio, language: language).segments
+                try Task.checkCancellation()
+            } catch where Task.isCancelled {
+                throw CancellationError()
             } catch {
                 // Keep the user's own words rather than losing the whole meeting.
                 Log.info("system audio transcription failed, saving Me only: \(error)")
             }
         }
         let metadata = MeetingMetadata(
-            startDate: startedAt, duration: duration, app: source,
+            startDate: meeting.startedAt, duration: meeting.duration, app: meeting.source,
             language: me.language, notes: .none, audio: .kept
         )
-        let markdown = MeetingDocument.markdown(me: me.segments, others: others, dictation: dictation, metadata: metadata)
+        let markdown = MeetingDocument.markdown(
+            me: me.segments, others: others, dictation: meeting.dictation, metadata: metadata
+        )
 
         let folder = preferences.meetingsFolder
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let file = try Self.unusedURL(in: folder, named: MeetingDocument.fileName(startDate: startedAt, app: source))
+        let file = try Self.unusedURL(
+            in: folder, named: MeetingDocument.fileName(startDate: meeting.startedAt, app: meeting.source)
+        )
         try markdown.write(to: file, atomically: true, encoding: .utf8)
         return file
     }

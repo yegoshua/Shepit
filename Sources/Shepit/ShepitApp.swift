@@ -29,7 +29,7 @@ private struct MenuBarLabel: View {
             Image(nsImage: TimerCapsule.image(text: TimerLabel.format(TimeInterval(state.elapsedSeconds))))
         } else if meeting.isRecording {
             Image(nsImage: TimerCapsule.meetingImage(text: TimerLabel.format(TimeInterval(meeting.elapsedSeconds))))
-        } else if meeting.phase == .processing && state.status == .idle {
+        } else if meeting.isProcessing && !meeting.isRecording && state.status == .idle {
             Image(systemName: "waveform")
         } else {
             Image(systemName: state.status == .idle ? "mic" : state.status.symbol)
@@ -155,7 +155,7 @@ struct MenuContent: View {
                 openSettings()
             }
             .keyboardShortcut(",")
-            if !isRecording && meeting.phase == .idle {
+            if !isRecording && meeting.phase == .idle && !meeting.isProcessing {
                 MenuRow("Вийти", shortcut: "⌘Q") { NSApp.terminate(nil) }
                     .keyboardShortcut("q")
             }
@@ -195,8 +195,9 @@ struct MenuContent: View {
                 }
             case .preparing:
                 MenuNote(title: "Готую запис зустрічі…", detail: nil)
-            case .processing:
-                MenuNote(title: "Розшифровую зустріч…", detail: nil)
+            }
+            if meeting.isProcessing {
+                MenuNote(title: processingTitle, detail: meeting.isRecording ? "Продовжу після зупинки запису." : nil)
             }
             if let warning = meeting.othersWarning {
                 Label(warning, systemImage: "speaker.slash")
@@ -216,6 +217,12 @@ struct MenuContent: View {
                     .padding(EdgeInsets(top: 0, leading: 10, bottom: 5, trailing: 10))
             }
         }
+    }
+
+    private var processingTitle: String {
+        let waiting = meeting.processingCount - 1
+        let base = meeting.isRecording ? "Розшифровка на паузі" : "Розшифровую зустріч…"
+        return waiting > 0 ? "\(base) · ще \(waiting) в черзі" : base
     }
 
     private var recordingStrip: some View {
