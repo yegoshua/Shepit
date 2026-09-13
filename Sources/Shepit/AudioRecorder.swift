@@ -8,6 +8,7 @@ final class AudioRecorder {
     private let lock = NSLock()
     private var samples: [Float] = []
     private var peakDecibels: Float = -.infinity
+    private var smoothedLevel: Float = 0
 
     /// Called on the main thread with the loudness (0...1) of each captured buffer.
     var onLevel: ((Float) -> Void)?
@@ -25,6 +26,7 @@ final class AudioRecorder {
         lock.withLock {
             samples.removeAll(keepingCapacity: true)
             peakDecibels = -.infinity
+            smoothedLevel = 0
         }
 
         input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
@@ -50,7 +52,12 @@ final class AudioRecorder {
             let decibels = Self.decibels(chunk)
             self.lock.withLock { self.peakDecibels = max(self.peakDecibels, decibels) }
             if let onLevel = self.onLevel {
-                let level = Self.normalizedLevel(decibels)
+                // Rise instantly, fall gradually so bars don't collapse between syllables.
+                let target = Self.normalizedLevel(decibels)
+                let level = self.lock.withLock {
+                    self.smoothedLevel = max(target, self.smoothedLevel * 0.8)
+                    return self.smoothedLevel
+                }
                 DispatchQueue.main.async { onLevel(level) }
             }
         }
@@ -74,10 +81,10 @@ final class AudioRecorder {
         return 20 * log10(max(rms, 1e-6))
     }
 
-    /// Built-in mics deliver normal speech around -45...-25 dBFS, so map -60...-20 dBFS onto 0...1
-    /// and lift quiet parts with a gentle curve.
+    /// Built-in mics deliver normal speech around -45...-25 dBFS (peaks near -20), so map
+    /// -55...-28 dBFS onto 0...1 and lift quiet parts with a curve.
     private static func normalizedLevel(_ decibels: Float) -> Float {
-        let linear = min(max((decibels + 60) / 40, 0), 1)
-        return pow(linear, 0.7)
+        let linear = min(max((decibels + 55) / 27, 0), 1)
+        return pow(linear, 0.6)
     }
 }
