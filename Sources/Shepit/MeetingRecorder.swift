@@ -31,6 +31,15 @@ final class MeetingRecorder {
         systemAudio = tap
     }
 
+    /// Loudest level on either track since the previous call, in dBFS.
+    func takeLoudestLevel() -> Float {
+        var peak = microphoneWriter?.takeLoudestLevel() ?? -.infinity
+        if #available(macOS 14.2, *), let tap = systemAudio as? SystemAudioTap {
+            peak = max(peak, tap.takeLoudestLevel())
+        }
+        return peak
+    }
+
     func stop() {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()

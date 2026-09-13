@@ -35,11 +35,14 @@ final class MeetingController: ObservableObject {
     @Published private(set) var lastError: String?
     /// Set while a recording runs without system audio.
     @Published private(set) var othersWarning: String?
+    /// Set while "Still recording?" waits for an answer.
+    @Published private(set) var stillRecordingPrompt: MeetingSession.PromptReason?
 
     private let preferences: Preferences
     private let transcriber: Transcriber
     private let recorder = MeetingRecorder()
     private let notifier = MeetingNotifier()
+    private var session = MeetingSession()
     private var ticker: Timer?
     /// Keeps the Mac from idle-sleeping from Start until the transcript is written.
     private var activity: NSObjectProtocol?
@@ -57,6 +60,9 @@ final class MeetingController: ObservableObject {
     init(preferences: Preferences, transcriber: Transcriber) {
         self.preferences = preferences
         self.transcriber = transcriber
+        notifier.onStillRecordingAnswer = { [weak self] keepRecording in
+            MainActor.assumeIsolated { self?.answerStillRecording(keepRecording) }
+        }
     }
 
     func toggle() {
@@ -68,7 +74,42 @@ final class MeetingController: ObservableObject {
     }
 
     func start() {
+        // A previous meeting still being transcribed blocks a new one for now.
         guard Self.isSupported, phase == .idle else { return }
+        send(.start)
+    }
+
+    func stop() {
+        send(.stop)
+    }
+
+    func answerStillRecording(_ keepRecording: Bool) {
+        send(.stillRecording(keepRecording))
+    }
+
+    /// Monotonic clock for the session; unaffected by the user changing the system time.
+    private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    private func send(_ event: MeetingSession.Event) {
+        for command in session.handle(event, at: Self.now) {
+            switch command {
+            case .startRecording:
+                startRecording()
+            case .stopRecording:
+                finishRecording()
+            case .askStillRecording(let reason):
+                Log.info("asking still recording? reason=\(reason)")
+                stillRecordingPrompt = reason
+                notifier.askStillRecording(reason)
+            case .dismissStillRecording:
+                // Clears both places, whichever one the user answered in.
+                stillRecordingPrompt = nil
+                notifier.dismissStillRecording()
+            }
+        }
+    }
+
+    private func startRecording() {
         phase = .preparing
         Task {
             let skipOthersReason = await prepareSystemAudio()
@@ -117,6 +158,7 @@ final class MeetingController: ObservableObject {
             Log.info("meeting recorder failed to start: \(error)")
             lastError = "Мікрофон: \(error.localizedDescription)"
             phase = .idle
+            send(.failedToStart)
             return
         }
 
@@ -141,18 +183,21 @@ final class MeetingController: ObservableObject {
         )
         phase = .recording(startedAt: startedAt, tracks: tracks)
         elapsedSeconds = 0
+        send(.started)
 
         let ticker = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, case .recording(let startedAt, _) = self.phase else { return }
                 self.elapsedSeconds = Int(Date().timeIntervalSince(startedAt))
+                self.send(.level(decibels: self.recorder.takeLoudestLevel()))
+                self.send(.tick)
             }
         }
         RunLoop.main.add(ticker, forMode: .common)
         self.ticker = ticker
     }
 
-    func stop() {
+    private func finishRecording() {
         guard case .recording(let startedAt, let tracks) = phase else { return }
         ticker?.invalidate()
         ticker = nil

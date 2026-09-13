@@ -48,6 +48,10 @@ final class SystemAudioTap {
         }
     }
 
+    func takeLoudestLevel() -> Float {
+        writer?.takeLoudestLevel() ?? -.infinity
+    }
+
     func stop() {
         if let ioProcID {
             AudioDeviceStop(aggregateID, ioProcID)

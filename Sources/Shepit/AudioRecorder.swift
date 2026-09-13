@@ -131,7 +131,7 @@ final class AudioRecorder {
         }
     }
 
-    private static func decibels(_ chunk: UnsafeBufferPointer<Float>) -> Float {
+    static func decibels(_ chunk: UnsafeBufferPointer<Float>) -> Float {
         guard !chunk.isEmpty else { return -120 }
         let rms = (chunk.reduce(0) { $0 + $1 * $1 } / Float(chunk.count)).squareRoot()
         return 20 * log10(max(rms, 1e-6))

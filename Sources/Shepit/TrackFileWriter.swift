@@ -10,6 +10,7 @@ final class TrackFileWriter {
     private let lock = NSLock()
     private var isClosed = false
     private var loggedWriteError = false
+    private var peakDecibels: Float = -.infinity
 
     init(url: URL, inputFormat: AVAudioFormat) throws {
         guard let targetFormat = AVAudioFormat(
@@ -38,12 +39,24 @@ final class TrackFileWriter {
     func write(_ buffer: AVAudioPCMBuffer) {
         lock.withLock {
             guard !isClosed, let output = AudioRecorder.resample(buffer, with: converter, to: targetFormat) else { return }
+            if let channel = output.floatChannelData?[0], output.frameLength > 0 {
+                let decibels = AudioRecorder.decibels(UnsafeBufferPointer(start: channel, count: Int(output.frameLength)))
+                peakDecibels = max(peakDecibels, decibels)
+            }
             do {
                 try file.write(from: output)
             } catch where !loggedWriteError {
                 loggedWriteError = true
                 Log.info("meeting audio write failed: \(error)")
             } catch {}
+        }
+    }
+
+    /// RMS level of the loudest buffer written since the previous call, in dBFS; `-infinity` when nothing arrived.
+    func takeLoudestLevel() -> Float {
+        lock.withLock {
+            defer { peakDecibels = -.infinity }
+            return peakDecibels
         }
     }
 
