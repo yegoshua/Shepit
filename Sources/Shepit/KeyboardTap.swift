@@ -8,12 +8,13 @@ final class KeyboardTap {
     private static let rightOptionKeyCode: Int64 = 61
     private static let escapeKeyCode: Int64 = 53
 
-    /// Receives an event on the main thread and returns true to swallow the underlying key event.
-    private let handler: (PushToTalk.Event) -> Bool
+    /// Receives an event and the moment it was typed (seconds since boot, same clock as
+    /// `ProcessInfo.systemUptime`) on the main thread; returns true to swallow the key event.
+    private let handler: (PushToTalk.Event, TimeInterval) -> Bool
     private var tap: CFMachPort?
     private var isOptionDown = false
 
-    init(handler: @escaping (PushToTalk.Event) -> Bool) {
+    init(handler: @escaping (PushToTalk.Event, TimeInterval) -> Bool) {
         self.handler = handler
     }
 
@@ -49,6 +50,9 @@ final class KeyboardTap {
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         let passThrough = Unmanaged.passUnretained(event)
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        // Events can queue up while the main thread is busy (e.g. starting the microphone),
+        // so timing rules must use when the key was typed, not when we got to it.
+        let typedAt = NSEvent(cgEvent: event)?.timestamp ?? ProcessInfo.processInfo.systemUptime
 
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
@@ -58,11 +62,11 @@ final class KeyboardTap {
             let down = event.flags.contains(.maskAlternate)
             guard down != isOptionDown else { break }
             isOptionDown = down
-            _ = handler(down ? .optionDown : .optionUp)
+            _ = handler(down ? .optionDown : .optionUp, typedAt)
 
         case .keyDown where keyCode == Self.escapeKeyCode:
             guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { break }
-            if handler(.escape) { return nil }
+            if handler(.escape, typedAt) { return nil }
 
         default:
             break

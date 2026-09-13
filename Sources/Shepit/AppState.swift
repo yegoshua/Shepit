@@ -67,8 +67,8 @@ final class AppState: ObservableObject {
     private var isTranscribing = false
 
     init() {
-        keyboard = KeyboardTap { [weak self] event in
-            MainActor.assumeIsolated { self?.handle(event) ?? false }
+        keyboard = KeyboardTap { [weak self] event, time in
+            MainActor.assumeIsolated { self?.handle(event, at: time) ?? false }
         }
         recorder.onLevel = { [weak self] level in
             MainActor.assumeIsolated { self?.overlay.push(level: level) }
@@ -111,10 +111,10 @@ final class AppState: ObservableObject {
     // MARK: - Push-to-talk
 
     /// Returns true when the key event should be swallowed.
-    private func handle(_ event: PushToTalk.Event) -> Bool {
+    private func handle(_ event: PushToTalk.Event, at time: TimeInterval) -> Bool {
         guard modelReady, !isTranscribing else { return false }
         let wasRecording = pushToTalk.isRecording
-        pushToTalk.handle(event, at: ProcessInfo.processInfo.systemUptime).forEach(execute)
+        pushToTalk.handle(event, at: time).forEach(execute)
         return event == .escape && wasRecording
     }
 
@@ -140,7 +140,7 @@ final class AppState: ObservableObject {
         NSSound(named: "Tink")?.play()
         overlay.show(.recording(handsFree: false, startedAt: recordingStartedAt))
         ticker = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { _ = self?.handle(.tick) }
+            MainActor.assumeIsolated { _ = self?.handle(.tick, at: ProcessInfo.processInfo.systemUptime) }
         }
     }
 
