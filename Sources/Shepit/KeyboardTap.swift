@@ -62,7 +62,7 @@ final class KeyboardTap {
             let down = event.flags.contains(.maskAlternate)
             guard down != isOptionDown else { break }
             isOptionDown = down
-            _ = handler(down ? .optionDown : .optionUp, typedAt)
+            _ = handler(down ? .keyDown : .keyUp, typedAt)
 
         case .keyDown where keyCode == Self.escapeKeyCode:
             guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { break }

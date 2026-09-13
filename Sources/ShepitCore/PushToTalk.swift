@@ -2,7 +2,7 @@ import Foundation
 
 public struct PushToTalk {
     public enum Event {
-        case optionDown, optionUp, escape, tick
+        case keyDown, keyUp, escape, tick
     }
 
     public enum Command: Equatable {
@@ -28,28 +28,33 @@ public struct PushToTalk {
         if case .idle = state { false } else { true }
     }
 
-    public init() {}
+    /// When false, a double-tap is just two push-to-talk presses.
+    public var handsFreeEnabled: Bool
+
+    public init(handsFreeEnabled: Bool = true) {
+        self.handsFreeEnabled = handsFreeEnabled
+    }
 
     public mutating func handle(_ event: Event, at time: TimeInterval) -> [Command] {
         switch (state, event) {
-        case (.idle(let lastTapAt), .optionDown):
-            if let lastTapAt, time - lastTapAt <= Self.doubleTapWindow {
+        case (.idle(let lastTapAt), .keyDown):
+            if handsFreeEnabled, let lastTapAt, time - lastTapAt <= Self.doubleTapWindow {
                 state = .handsFree(since: time, keyHeld: true)
                 return [.start, .enterHandsFree]
             }
             state = .holding(since: time)
             return [.start]
-        case (.holding(let since), .optionUp):
+        case (.holding(let since), .keyUp):
             if time - since < Self.minimumHoldDuration {
                 state = .idle(lastTapAt: time)
                 return [.discard]
             }
             state = .idle(lastTapAt: nil)
             return [.finish]
-        case (.handsFree(let since, keyHeld: true), .optionUp):
+        case (.handsFree(let since, keyHeld: true), .keyUp):
             state = .handsFree(since: since, keyHeld: false)
             return []
-        case (.handsFree(_, keyHeld: false), .optionDown):
+        case (.handsFree(_, keyHeld: false), .keyDown):
             state = .idle(lastTapAt: nil)
             return [.finish]
         case (.holding, .escape), (.handsFree, .escape):
