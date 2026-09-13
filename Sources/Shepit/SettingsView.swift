@@ -1,0 +1,117 @@
+import SwiftUI
+import ShepitCore
+
+struct SettingsView: View {
+    @ObservedObject var preferences: Preferences
+    @ObservedObject var microphones: Microphones
+
+    var body: some View {
+        TabView {
+            GeneralSettings(preferences: preferences)
+                .tabItem { Label("Загальне", systemImage: "gearshape") }
+            RecordingSettings(preferences: preferences, microphones: microphones)
+                .tabItem { Label("Запис", systemImage: "mic") }
+        }
+        .frame(width: 520)
+        .tint(Palette.jade)
+    }
+}
+
+private struct GeneralSettings: View {
+    @ObservedObject var preferences: Preferences
+    @State private var launchAtLogin = LaunchAtLogin.isEnabled
+    @State private var launchError: String?
+
+    var body: some View {
+        Form {
+            Section {
+                PillPreview(hotkey: preferences.hotkey, handsFree: preferences.handsFreeEnabled)
+            }
+
+            Section {
+                Picker("Гаряча клавіша", selection: $preferences.hotkey) {
+                    ForEach(HotkeyKey.allCases) { Text($0.title).tag($0) }
+                }
+                Toggle(isOn: $preferences.handsFreeEnabled) {
+                    Text("Hands-free подвійним натисканням")
+                    Text("Двічі натисни клавішу — запис іде без утримання.")
+                }
+            }
+
+            Section {
+                Toggle("Запускати при вході в систему", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, enabled in updateLaunchAtLogin(enabled) }
+                if let launchError {
+                    Text(launchError).font(.caption).foregroundStyle(.red)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { launchAtLogin = LaunchAtLogin.isEnabled }
+    }
+
+    private func updateLaunchAtLogin(_ enabled: Bool) {
+        guard enabled != LaunchAtLogin.isEnabled else { return }
+        do {
+            try LaunchAtLogin.set(enabled)
+            launchError = LaunchAtLogin.needsApproval
+                ? "Дозволь Shepit у System Settings → General → Login Items."
+                : nil
+        } catch {
+            launchError = "Не вдалося змінити автозапуск: \(error.localizedDescription)"
+        }
+        launchAtLogin = LaunchAtLogin.isEnabled
+    }
+}
+
+private struct RecordingSettings: View {
+    @ObservedObject var preferences: Preferences
+    @ObservedObject var microphones: Microphones
+
+    var body: some View {
+        Form {
+            Picker("Мікрофон", selection: $preferences.microphoneID) {
+                Text("Системний").tag(String?.none)
+                ForEach(microphones.available) { mic in
+                    Text(mic.name).tag(String?.some(mic.id))
+                }
+                if let missingID {
+                    Text("Недоступний пристрій").tag(String?.some(missingID))
+                }
+            }
+            if missingID != nil {
+                Label("Не підключено · використовується системний", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { microphones.refresh() }
+    }
+
+    /// The saved microphone when it isn't currently connected.
+    private var missingID: String? {
+        guard let id = preferences.microphoneID, !microphones.available.contains(where: { $0.id == id }) else { return nil }
+        return id
+    }
+}
+
+/// Static preview of the recording pill reflecting the chosen key and mode.
+private struct PillPreview: View {
+    let hotkey: HotkeyKey
+    let handsFree: Bool
+
+    private static let levels: [Float] = (0..<24).map { Float(0.35 + 0.55 * abs(sin(Double($0) * 1.7))) }
+
+    var body: some View {
+        RecordingPill(
+            phase: .recording(handsFree: handsFree, startedAt: Date().addingTimeInterval(-6)),
+            levels: Self.levels,
+            stopKeySymbol: hotkey.symbol
+        )
+        .environment(\.colorScheme, .dark)
+        .padding(.vertical, 28)
+        .frame(maxWidth: .infinity)
+        .background(Color(red: 0.04, green: 0.045, blue: 0.045), in: RoundedRectangle(cornerRadius: 10))
+    }
+}

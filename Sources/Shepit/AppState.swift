@@ -1,29 +1,16 @@
 import AppKit
+import Combine
 import AVFoundation
 import SwiftUI
 import ShepitCore
-
-enum Language: String, CaseIterable, Identifiable {
-    case auto, uk, en, ru
-
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .auto: "Автовизначення"
-        case .uk: "Українська"
-        case .en: "English"
-        case .ru: "Русский"
-        }
-    }
-    /// nil means Whisper detects the language itself.
-    var whisperCode: String? { self == .auto ? nil : rawValue }
-}
 
 enum Status: Equatable {
     case loadingModel(String)
     case idle
     case recording
     case transcribing
+    case success
+    case failure(String)
     case error(String)
 
     var title: String {
@@ -32,6 +19,8 @@ enum Status: Equatable {
         case .idle: "Готово"
         case .recording: "Слухаю…"
         case .transcribing: "Розпізнаю…"
+        case .success: "Скопійовано"
+        case .failure(let message): message.prefix(1).uppercased() + message.dropFirst()
         case .error(let message): message
         }
     }
@@ -42,11 +31,17 @@ enum Status: Equatable {
         case .idle: "mic"
         case .recording: "mic.fill"
         case .transcribing: "waveform"
-        case .error: "exclamationmark.triangle"
+        case .success: "checkmark.circle"
+        case .failure, .error: "exclamationmark.triangle"
         }
     }
 
-    var isError: Bool { if case .error = self { true } else { false } }
+    var isError: Bool {
+        switch self {
+        case .error, .failure: true
+        default: false
+        }
+    }
 }
 
 @MainActor
@@ -54,7 +49,8 @@ final class AppState: ObservableObject {
     @Published var status: Status = .loadingModel("Завантаження моделі…")
     @Published var lastText = ""
     @Published var hasAccessibility = TextInserter.isTrusted
-    @AppStorage("language") var language: Language = .auto
+    let preferences = Preferences()
+    let microphones = Microphones()
 
     private let recorder = AudioRecorder()
     private let transcriber = Transcriber()
@@ -62,18 +58,43 @@ final class AppState: ObservableObject {
     private var pushToTalk = PushToTalk()
     private var keyboard: KeyboardTap?
     private var ticker: Timer?
+    private var subscriptions: Set<AnyCancellable> = []
     private var recordingStartedAt = Date()
     private var modelReady = false
     private var isTranscribing = false
 
     init() {
-        keyboard = KeyboardTap { [weak self] event, time in
+        keyboard = KeyboardTap(hotkey: preferences.hotkey) { [weak self] event, time in
             MainActor.assumeIsolated { self?.handle(event, at: time) ?? false }
         }
         recorder.onLevel = { [weak self] level in
             MainActor.assumeIsolated { self?.overlay.push(level: level) }
         }
+        overlay.onHide = { [weak self] in
+            guard let self else { return }
+            switch status {
+            case .success, .failure: status = .idle
+            default: break
+            }
+        }
+        observePreferences()
         Task { await setUp() }
+    }
+
+    private func observePreferences() {
+        preferences.$hotkey
+            .sink { [weak self] key in
+                self?.keyboard?.hotkey = key
+                self?.overlay.stopKeySymbol = key.symbol
+            }
+            .store(in: &subscriptions)
+        preferences.$handsFreeEnabled
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                // Takes effect from the next recording; never flip mode mid-recording.
+                if !pushToTalk.isRecording { pushToTalk.handsFreeEnabled = enabled }
+            }
+            .store(in: &subscriptions)
     }
 
     func requestAccessibility() {
@@ -124,34 +145,51 @@ final class AppState: ObservableObject {
     private func handle(_ event: PushToTalk.Event, at time: TimeInterval) -> Bool {
         guard modelReady, !isTranscribing else { return false }
         let wasRecording = pushToTalk.isRecording
-        pushToTalk.handle(event, at: time).forEach(execute)
+        if !wasRecording { pushToTalk.handsFreeEnabled = preferences.handsFreeEnabled }
+        for command in pushToTalk.handle(event, at: time) {
+            // If the microphone failed, skip the rest of the batch (e.g. enter hands-free).
+            guard execute(command) else { break }
+        }
         return event == .escape && wasRecording
     }
 
-    private func execute(_ command: PushToTalk.Command) {
+    /// Returns false when the command failed and later commands must not run.
+    private func execute(_ command: PushToTalk.Command) -> Bool {
         switch command {
-        case .start: startRecording()
+        case .start: return startRecording()
         case .enterHandsFree: overlay.show(.recording(handsFree: true, startedAt: recordingStartedAt))
         case .finish: finishRecording()
         case .cancel, .discard: abortRecording()
         }
+        return true
     }
 
-    private func startRecording() {
+    private func startRecording() -> Bool {
         do {
-            try recorder.start()
+            try recorder.start(preferredDeviceID: preferences.microphoneID)
         } catch {
-            pushToTalk = PushToTalk()
+            pushToTalk = PushToTalk(handsFreeEnabled: preferences.handsFreeEnabled)
+            overlay.hide()
             status = .error("Мікрофон: \(error.localizedDescription)")
-            return
+            Log.info("recorder failed to start: \(error)")
+            return false
         }
         recordingStartedAt = Date()
         status = .recording
-        NSSound(named: "Tink")?.play()
+        playSound("Tink")
         overlay.show(.recording(handsFree: false, startedAt: recordingStartedAt))
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        let ticker = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { _ = self?.handle(.tick, at: ProcessInfo.processInfo.systemUptime) }
         }
+        // Common modes keep the hands-free limit ticking while menus are open.
+        RunLoop.main.add(ticker, forMode: .common)
+        self.ticker = ticker
+        return true
+    }
+
+    private func playSound(_ name: String) {
+        guard preferences.soundsEnabled else { return }
+        NSSound(named: name)?.play()
     }
 
     private func abortRecording() {
@@ -164,7 +202,7 @@ final class AppState: ObservableObject {
     private func finishRecording() {
         stopTicker()
         let samples = recorder.stop()
-        NSSound(named: "Pop")?.play()
+        playSound("Pop")
 
         isTranscribing = true
         status = .transcribing
@@ -172,21 +210,25 @@ final class AppState: ObservableObject {
         Task {
             defer { isTranscribing = false }
             do {
-                let text = try await transcriber.transcribe(samples, language: language.whisperCode)
+                let text = try await transcriber.transcribe(samples, language: preferences.language.whisperCode)
                 guard !text.isEmpty else {
-                    overlay.show(.failure("нічого не розпізнано"))
-                    status = .idle
+                    showFailure("нічого не розпізнано")
                     return
                 }
                 lastText = text
                 TextInserter.insert(text)
                 overlay.show(.success)
-                status = .idle
+                status = .success
             } catch {
-                overlay.show(.failure("нічого не розпізнано"))
-                status = .error("Розпізнавання: \(error.localizedDescription)")
+                Log.info("transcription failed: \(error)")
+                showFailure("помилка розпізнавання")
             }
         }
+    }
+
+    private func showFailure(_ message: String) {
+        overlay.show(.failure(message))
+        status = .failure(message)
     }
 
     private func stopTicker() {

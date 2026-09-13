@@ -10,6 +10,7 @@ Xcode is not required — everything builds with SwiftPM and the Command Line To
 ./scripts/bundle.sh && open build/Shepit.app   # build and run the .app
 swift build -c release                         # compile only
 ./scripts/test.sh                              # run tests (Swift Testing)
+./scripts/install.sh                           # build, copy to /Applications and launch
 ```
 
 Pure, framework-free logic lives in the `ShepitCore` target and is tested there; `Shepit` holds the AppKit/AVFoundation/WhisperKit adapters.

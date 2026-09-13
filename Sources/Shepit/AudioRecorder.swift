@@ -1,10 +1,12 @@
 import AVFoundation
+import CoreAudio
 
-/// Captures the default microphone and resamples to 16 kHz mono Float32, the format Whisper expects.
+/// Captures a microphone and resamples to 16 kHz mono Float32, the format Whisper expects.
 final class AudioRecorder {
     static let sampleRate: Double = 16_000
 
-    private let engine = AVAudioEngine()
+    /// A fresh engine per recording, so switching input devices never fights stale engine state.
+    private var engine = AVAudioEngine()
     private let lock = NSLock()
     private var samples: [Float] = []
     private var peakDecibels: Float = -.infinity
@@ -13,7 +15,21 @@ final class AudioRecorder {
     /// Called on the main thread with the loudness (0...1) of each captured buffer.
     var onLevel: ((Float) -> Void)?
 
-    func start() throws {
+    /// Records from the device with this CoreAudio UID when it's connected, else from the system default.
+    func start(preferredDeviceID: String?) throws {
+        engine = AVAudioEngine()
+        if let preferredDeviceID {
+            if let device = Self.audioDeviceID(forUID: preferredDeviceID) {
+                do {
+                    try Self.select(device, on: engine.inputNode)
+                } catch {
+                    Log.info("microphone \(preferredDeviceID) could not be selected, using system default: \(error)")
+                    engine = AVAudioEngine()
+                }
+            } else {
+                Log.info("microphone \(preferredDeviceID) not connected, using system default")
+            }
+        }
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
         guard let targetFormat = AVAudioFormat(
@@ -72,6 +88,37 @@ final class AudioRecorder {
         return lock.withLock {
             Log.info(String(format: "recording stopped: %.1f s, peak %.1f dBFS", Double(samples.count) / Self.sampleRate, peakDecibels))
             return samples
+        }
+    }
+
+    private static func audioDeviceID(forUID uid: String) -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var cfUID = uid as CFString
+        var device = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = withUnsafeMutablePointer(to: &cfUID) { uidPointer in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject), &address,
+                UInt32(MemoryLayout<CFString>.size), uidPointer, &size, &device
+            )
+        }
+        return status == noErr && device != kAudioObjectUnknown ? device : nil
+    }
+
+    private static func select(_ device: AudioDeviceID, on input: AVAudioInputNode) throws {
+        guard let unit = input.audioUnit else { return }
+        var device = device
+        let status = AudioUnitSetProperty(
+            unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+            &device, UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        guard status == noErr else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status),
+                          userInfo: [NSLocalizedDescriptionKey: "Не вдалося вибрати мікрофон"])
         }
     }
 

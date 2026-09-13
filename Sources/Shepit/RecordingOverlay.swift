@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ShepitCore
 
 enum OverlayPhase: Equatable {
     case recording(handsFree: Bool, startedAt: Date)
@@ -18,6 +19,15 @@ final class RecordingOverlay {
     private let model = OverlayModel()
     private let panel: NSPanel
     private var hideWork: DispatchWorkItem?
+
+    /// Called once the pill has fully faded out.
+    var onHide: (() -> Void)?
+
+    /// Symbol of the push-to-talk key shown in the hands-free stop hint.
+    var stopKeySymbol: String {
+        get { model.stopKeySymbol }
+        set { model.stopKeySymbol = newValue }
+    }
 
     init() {
         panel = NSPanel(
@@ -42,10 +52,11 @@ final class RecordingOverlay {
         withAnimation(.spring(duration: 0.3)) { model.phase = phase }
 
         if !panel.isVisible {
-            place()
             panel.alphaValue = 0
             panel.orderFrontRegardless()
         }
+        // A new recording may start while the previous pill is still fading out on another screen.
+        if case .recording = phase { place() }
         NSAnimationContext.runAnimationGroup { $0.duration = 0.15; panel.animator().alphaValue = 1 }
 
         switch phase {
@@ -57,8 +68,12 @@ final class RecordingOverlay {
 
     func hide() {
         hideWork?.cancel()
-        NSAnimationContext.runAnimationGroup({ $0.duration = 0.2; panel.animator().alphaValue = 0 }) { [panel] in
-            MainActor.assumeIsolated { if panel.alphaValue == 0 { panel.orderOut(nil) } }
+        NSAnimationContext.runAnimationGroup({ $0.duration = 0.2; panel.animator().alphaValue = 0 }) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.panel.alphaValue == 0 else { return }
+                self.panel.orderOut(nil)
+                self.onHide?()
+            }
         }
     }
 
@@ -93,6 +108,7 @@ private final class OverlayModel: ObservableObject {
 
     @Published var phase: OverlayPhase?
     @Published var levels = silence
+    @Published var stopKeySymbol = HotkeyKey.rightOption.symbol
 }
 
 private struct OverlayView: View {
@@ -102,7 +118,7 @@ private struct OverlayView: View {
         VStack {
             Spacer(minLength: 0)
             if let phase = model.phase {
-                RecordingPill(phase: phase, levels: model.levels)
+                RecordingPill(phase: phase, levels: model.levels, stopKeySymbol: model.stopKeySymbol)
                     .transition(.scale(scale: 0.9).combined(with: .opacity))
             }
         }
@@ -113,7 +129,7 @@ private struct OverlayView: View {
 
 // MARK: - Design: "Obsidian & jade" (Claude Design, Recording Pill 4a/4b)
 
-private enum Palette {
+enum Palette {
     static let jade = Color(rgb: 0x38D69A)
     static let mint = Color(rgb: 0xBFF0D9)
     static let amber = Color(rgb: 0xE8B25C)
@@ -125,9 +141,10 @@ private enum Palette {
     static let processingArc = Color(rgb: 0x8FE8C2)
 }
 
-private struct RecordingPill: View {
+struct RecordingPill: View {
     let phase: OverlayPhase
     let levels: [Float]
+    let stopKeySymbol: String
 
     var body: some View {
         HStack(spacing: 20) {
@@ -149,7 +166,7 @@ private struct RecordingPill: View {
             TimerLabel(startedAt: startedAt, locked: handsFree)
             if handsFree {
                 Rectangle().fill(.white.opacity(0.09)).frame(width: 1, height: 16)
-                Text("⌥ СТОП")
+                Text("\(stopKeySymbol) СТОП")
                     .font(.system(size: 10, design: .monospaced))
                     .tracking(1.8)
                     .foregroundStyle(Palette.caption)
