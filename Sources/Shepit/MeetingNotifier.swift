@@ -11,7 +11,16 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
     /// Called on the main thread with the button chosen on "Still recording?": true keeps recording.
     var onStillRecordingAnswer: ((Bool) -> Void)?
 
+    /// Called on the main thread with the answer to a call-detection offer: true accepts it.
+    var onOfferAnswer: ((Bool) -> Void)?
+
     private static let stillRecordingID = "still-recording"
+    /// One slot for call offers, so a stop offer replaces a stale record offer and dismissal clears either.
+    private static let offerID = "call-offer"
+    private static let recordOfferCategory = "recordOffer"
+    private static let stopOfferCategory = "stopOffer"
+    private static let acceptAction = "accept"
+    private static let declineAction = "decline"
     private static let stillRecordingCategory = "stillRecording"
     private static let keepAction = "keep"
     private static let stopAction = "stop"
@@ -33,6 +42,25 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
                 ],
                 intentIdentifiers: []
             ),
+            // Closing an offer notification counts as declining it.
+            UNNotificationCategory(
+                identifier: Self.recordOfferCategory,
+                actions: [
+                    UNNotificationAction(identifier: Self.acceptAction, title: "Записати"),
+                    UNNotificationAction(identifier: Self.declineAction, title: "Не треба"),
+                ],
+                intentIdentifiers: [],
+                options: [.customDismissAction]
+            ),
+            UNNotificationCategory(
+                identifier: Self.stopOfferCategory,
+                actions: [
+                    UNNotificationAction(identifier: Self.acceptAction, title: "Зупинити запис", options: [.destructive]),
+                    UNNotificationAction(identifier: Self.declineAction, title: "Продовжити"),
+                ],
+                intentIdentifiers: [],
+                options: [.customDismissAction]
+            ),
         ])
     }
 
@@ -43,6 +71,21 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
         }
         post(title: "Зустріч ще записується?", body: body, userInfo: [:],
              identifier: Self.stillRecordingID, category: Self.stillRecordingCategory)
+    }
+
+    func offerToRecord(app: String) {
+        post(title: "Дзвінок у \(app)", body: "Записати зустріч? Запис почнеться лише після «Записати».",
+             userInfo: [:], identifier: Self.offerID, category: Self.recordOfferCategory)
+    }
+
+    func offerToStop(app: String) {
+        post(title: "Дзвінок у \(app) завершився?", body: "\(app) більше не використовує мікрофон.",
+             userInfo: [:], identifier: Self.offerID, category: Self.stopOfferCategory)
+    }
+
+    func dismissOffer() {
+        center?.removeDeliveredNotifications(withIdentifiers: [Self.offerID])
+        center?.removePendingNotificationRequests(withIdentifiers: [Self.offerID])
     }
 
     func dismissStillRecording() {
@@ -87,6 +130,11 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
         switch response.actionIdentifier {
         case Self.keepAction: DispatchQueue.main.async { self.onStillRecordingAnswer?(true) }
         case Self.stopAction: DispatchQueue.main.async { self.onStillRecordingAnswer?(false) }
+        case Self.acceptAction: DispatchQueue.main.async { self.onOfferAnswer?(true) }
+        case Self.declineAction, UNNotificationDismissActionIdentifier:
+            if response.notification.request.identifier == Self.offerID {
+                DispatchQueue.main.async { self.onOfferAnswer?(false) }
+            }
         default: break
         }
         if let path = response.notification.request.content.userInfo[Self.fileKey] as? String {

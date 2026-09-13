@@ -131,6 +131,7 @@ private struct MeetingSettings: View {
                 Text("Markdown-файли зустрічей зберігаються тут. Аудіо лишається в Application Support.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                CallAppsSection(preferences: preferences)
             }
         }
         .formStyle(.grouped)
@@ -145,6 +146,63 @@ private struct MeetingSettings: View {
         NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let url = panel.url {
             preferences.meetingsFolder = url
+        }
+    }
+}
+
+/// The editable list of apps that make Shepit offer to record a call.
+private struct CallAppsSection: View {
+    @ObservedObject var preferences: Preferences
+
+    var body: some View {
+        Section {
+            ForEach(preferences.callApps) { app in
+                HStack {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(app.name)
+                        Text(app.bundleID).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        preferences.callApps.removeAll { $0.id == app.id }
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Прибрати зі списку")
+                }
+            }
+            HStack {
+                Button("Додати застосунок…", action: addApp)
+                Spacer()
+                if preferences.callApps != CallApp.defaults {
+                    Button("Типовий список") { preferences.callApps = CallApp.defaults }
+                }
+            }
+        } header: {
+            Text("Пропонувати запис дзвінків")
+        } footer: {
+            Text("Коли один із цих застосунків почне використовувати мікрофон, Shepit запропонує записати зустріч. Запис почнеться лише після твоєї згоди.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func addApp() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowsMultipleSelection = true
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let bundle = Bundle(url: url), let bundleID = bundle.bundleIdentifier,
+                  !preferences.callApps.contains(where: { $0.bundleID.caseInsensitiveCompare(bundleID) == .orderedSame })
+            else { continue }
+            let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+                ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
+                ?? url.deletingPathExtension().lastPathComponent
+            preferences.callApps.append(CallApp(name: name, bundleID: bundleID))
         }
     }
 }

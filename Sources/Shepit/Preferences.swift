@@ -78,6 +78,10 @@ final class Preferences: ObservableObject {
     /// CoreAudio device UID of the preferred microphone; nil means the system default.
     @Published var microphoneID: String? { didSet { defaults.set(microphoneID, forKey: "microphoneID") } }
     @Published var meetingShortcut: MeetingShortcut { didSet { defaults.set(meetingShortcut.rawValue, forKey: "meetingShortcut") } }
+    /// Apps whose microphone use makes Shepit offer to record a meeting.
+    @Published var callApps: [CallApp] {
+        didSet { defaults.set(try? JSONEncoder().encode(callApps), forKey: "callApps") }
+    }
     /// Where meeting Markdown files are saved.
     @Published var meetingsFolder: URL { didSet { defaults.set(meetingsFolder.path, forKey: "meetingsFolder") } }
 
@@ -94,6 +98,8 @@ final class Preferences: ObservableObject {
         meetingLanguageOverride = defaults.string(forKey: "meetingLanguage").flatMap(Language.init)
         microphoneID = defaults.string(forKey: "microphoneID")
         meetingShortcut = defaults.string(forKey: "meetingShortcut").flatMap(MeetingShortcut.init) ?? .controlOptionM
+        callApps = defaults.data(forKey: "callApps").flatMap { try? JSONDecoder().decode([CallApp].self, from: $0) }
+            ?? CallApp.defaults
         meetingsFolder = defaults.string(forKey: "meetingsFolder").map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? Self.defaultMeetingsFolder
     }

@@ -173,12 +173,22 @@ struct MenuContent: View {
         } else {
             switch meeting.phase {
             case .idle:
+                if case .record(let app) = meeting.offer {
+                    MenuNote(title: "Дзвінок у \(app)", detail: "Записати цю зустріч?")
+                }
                 MenuRow("Записати зустріч", shortcut: shortcut) { meeting.start() }
+                if case .record = meeting.offer {
+                    MenuRow("Не записувати") { meeting.dismissOffer() }
+                }
             case .recording:
                 if meeting.stillRecordingPrompt != nil {
                     // Same question as the notification, for when notifications are off or dismissed.
                     MenuNote(title: "Зустріч ще записується?", detail: nil)
                     MenuRow("Так, продовжити") { meeting.answerStillRecording(true) }
+                }
+                if case .stop(let app) = meeting.offer {
+                    MenuNote(title: "Дзвінок у \(app) завершився?", detail: "\(app) більше не використовує мікрофон.")
+                    MenuRow("Продовжити запис") { meeting.dismissOffer() }
                 }
                 MenuRow("Зупинити зустріч · \(TimerLabel.format(TimeInterval(meeting.elapsedSeconds)))", shortcut: shortcut) {
                     meeting.stop()

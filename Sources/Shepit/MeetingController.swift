@@ -37,12 +37,26 @@ final class MeetingController: ObservableObject {
     @Published private(set) var othersWarning: String?
     /// Set while "Still recording?" waits for an answer.
     @Published private(set) var stillRecordingPrompt: MeetingSession.PromptReason?
+    /// The call-detection offer currently on screen.
+    @Published private(set) var offer: Offer?
+
+    enum Offer: Equatable {
+        /// `app` began using the microphone: record the call?
+        case record(app: String)
+        /// `app` released the microphone while recording: stop?
+        case stop(app: String)
+    }
 
     private let preferences: Preferences
     private let transcriber: Transcriber
     private let recorder = MeetingRecorder()
     private let notifier = MeetingNotifier()
     private var session = MeetingSession()
+    /// `CallDetector` on macOS 14.2+; typed loosely because stored properties can't be availability-gated.
+    private var callDetector: AnyObject?
+    /// Name written to the meeting file for the recording being made: the detected call app or `manualSource`.
+    private var source = MeetingController.manualSource
+    private var subscriptions: Set<AnyCancellable> = []
     private var ticker: Timer?
     /// Keeps the Mac from idle-sleeping from Start until the transcript is written.
     private var activity: NSObjectProtocol?
@@ -63,6 +77,31 @@ final class MeetingController: ObservableObject {
         notifier.onStillRecordingAnswer = { [weak self] keepRecording in
             MainActor.assumeIsolated { self?.answerStillRecording(keepRecording) }
         }
+        notifier.onOfferAnswer = { [weak self] accepted in
+            MainActor.assumeIsolated { accepted ? self?.acceptOffer() : self?.dismissOffer() }
+        }
+        if #available(macOS 14.2, *) { startCallDetection() }
+    }
+
+    @available(macOS 14.2, *)
+    private func startCallDetection() {
+        let detector = CallDetector(apps: preferences.callApps)
+        detector.onEvents = { [weak self] events in
+            guard let self else { return }
+            for event in events {
+                // A previous meeting still being transcribed blocks a new recording for now,
+                // so an offer then could only fail; the calls that end are harmless to pass on.
+                if case .callStarted = event, phase == .processing { continue }
+                send(event)
+            }
+        }
+        preferences.$callApps
+            .sink { [weak detector] apps in detector?.apps = apps }
+            .store(in: &subscriptions)
+        callDetector = detector
+        // Offers are notifications, so ask before the first call rather than lose that offer to the prompt.
+        notifier.requestAuthorization()
+        detector.start()
     }
 
     func toggle() {
@@ -87,13 +126,23 @@ final class MeetingController: ObservableObject {
         send(.stillRecording(keepRecording))
     }
 
+    /// Records the offered call, or stops a recording whose call app released the microphone.
+    func acceptOffer() {
+        send(.offerAccepted)
+    }
+
+    func dismissOffer() {
+        send(.offerDismissed)
+    }
+
     /// Monotonic clock for the session; unaffected by the user changing the system time.
     private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
     private func send(_ event: MeetingSession.Event) {
         for command in session.handle(event, at: Self.now) {
             switch command {
-            case .startRecording:
+            case .startRecording(let app):
+                source = app ?? Self.manualSource
                 startRecording()
             case .stopRecording:
                 finishRecording()
@@ -105,6 +154,15 @@ final class MeetingController: ObservableObject {
                 // Clears both places, whichever one the user answered in.
                 stillRecordingPrompt = nil
                 notifier.dismissStillRecording()
+            case .offerToRecord(let app):
+                offer = .record(app: app)
+                notifier.offerToRecord(app: app)
+            case .offerToStop(let app):
+                offer = .stop(app: app)
+                notifier.offerToStop(app: app)
+            case .dismissOffer:
+                offer = nil
+                notifier.dismissOffer()
             }
         }
     }
@@ -204,6 +262,7 @@ final class MeetingController: ObservableObject {
         recorder.stop()
         othersWarning = nil
         let duration = Date().timeIntervalSince(startedAt)
+        let source = source
         Log.info(String(format: "meeting recording stopped: %.0f s", duration))
         phase = .processing
 
@@ -214,7 +273,7 @@ final class MeetingController: ObservableObject {
                 activity = nil
             }
             do {
-                let file = try await transcribe(tracks, startedAt: startedAt, duration: duration)
+                let file = try await transcribe(tracks, source: source, startedAt: startedAt, duration: duration)
                 Log.info("meeting transcript written: \(file.path)")
                 notifier.transcriptReady(file)
             } catch {
@@ -226,7 +285,7 @@ final class MeetingController: ObservableObject {
         }
     }
 
-    private func transcribe(_ tracks: Tracks, startedAt: Date, duration: TimeInterval) async throws -> URL {
+    private func transcribe(_ tracks: Tracks, source: String, startedAt: Date, duration: TimeInterval) async throws -> URL {
         guard await transcriber.waitUntilLoaded() else { throw TranscriberError.modelNotLoaded }
         let language = preferences.meetingLanguage.whisperCode
         let me = try await transcriber.transcribeFile(at: tracks.microphone, language: language)
@@ -240,14 +299,14 @@ final class MeetingController: ObservableObject {
             }
         }
         let metadata = MeetingMetadata(
-            startDate: startedAt, duration: duration, app: Self.manualSource,
+            startDate: startedAt, duration: duration, app: source,
             language: me.language, notes: .none, audio: .kept
         )
         let markdown = MeetingDocument.markdown(me: me.segments, others: others, metadata: metadata)
 
         let folder = preferences.meetingsFolder
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let file = try Self.unusedURL(in: folder, named: MeetingDocument.fileName(startDate: startedAt, app: Self.manualSource))
+        let file = try Self.unusedURL(in: folder, named: MeetingDocument.fileName(startDate: startedAt, app: source))
         try markdown.write(to: file, atomically: true, encoding: .utf8)
         return file
     }
