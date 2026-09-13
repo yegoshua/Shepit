@@ -18,6 +18,8 @@
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Shepit записує звук дзвінка, щоб у транскрипті зустрічі були репліки інших учасників. Запис і розпізнавання лишаються на цьому Mac.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Shepit записує голос, поки ви тримаєте гарячу клавішу, і перетворює його на текст локально.</string>
 </dict>

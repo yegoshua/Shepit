@@ -45,7 +45,9 @@ public struct MeetingMetadata: Equatable, Sendable {
 
 /// Turns a finished meeting recording into its Markdown file.
 public enum MeetingDocument {
-    public static func markdown(me: [TranscriptSegment], metadata: MeetingMetadata, timeZone: TimeZone = .current) -> String {
+    /// `me` is the microphone track; `others` is system audio, empty when it wasn't captured.
+    public static func markdown(me: [TranscriptSegment], others: [TranscriptSegment] = [], metadata: MeetingMetadata,
+                                timeZone: TimeZone = .current) -> String {
         var lines = [
             "---",
             "date: \(format(metadata.startDate, "yyyy-MM-dd'T'HH:mm", timeZone))",
@@ -60,9 +62,12 @@ public enum MeetingDocument {
             "## Transcript",
             "",
         ]
-        for segment in me where isSpeech(segment) {
+        let others = others.filter(isSpeech)
+        let me = me.filter { isSpeech($0) && !isEcho($0, of: others) }
+        let spoken = me.map { ($0, "Me") } + others.map { ($0, "Others") }
+        for (segment, speaker) in spoken.sorted(by: { $0.0.start < $1.0.start }) {
             let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            lines += ["**[\(timestamp(segment.start))] Me:** \(text)", ""]
+            lines += ["**[\(timestamp(segment.start))] \(speaker):** \(text)", ""]
         }
         return lines.joined(separator: "\n")
     }
@@ -96,6 +101,38 @@ public enum MeetingDocument {
         guard segment.text.contains(where: { $0.isLetter || $0.isNumber }) else { return false }
         let words = segment.text.split(whereSeparator: \.isWhitespace).count
         return segment.end - segment.start < hallucinationMinimumDuration || words > hallucinationMaximumWords
+    }
+
+    /// The microphone picks up the speakers when there are no headphones, so the same phrase
+    /// can appear on both tracks; the system audio copy is the clean one.
+    private static let echoWindow: TimeInterval = 1.5
+    /// Dice coefficient over normalized words above which two phrases count as the same.
+    private static let echoSimilarity = 0.6
+
+    private static func isEcho(_ segment: TranscriptSegment, of others: [TranscriptSegment]) -> Bool {
+        let words = normalizedWords(segment.text)
+        return others.contains { other in
+            abs(other.start - segment.start) <= echoWindow && similarity(words, normalizedWords(other.text)) >= echoSimilarity
+        }
+    }
+
+    private static func normalizedWords(_ text: String) -> [String] {
+        text.lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+    }
+
+    private static func similarity(_ a: [String], _ b: [String]) -> Double {
+        guard !a.isEmpty, !b.isEmpty else { return 0 }
+        var remaining = b
+        var shared = 0
+        for word in a {
+            if let index = remaining.firstIndex(of: word) {
+                remaining.remove(at: index)
+                shared += 1
+            }
+        }
+        return 2 * Double(shared) / Double(a.count + b.count)
     }
 
     /// `mm:ss`; minutes keep counting past an hour.

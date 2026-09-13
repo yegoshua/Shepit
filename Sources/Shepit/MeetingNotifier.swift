@@ -26,6 +26,10 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
              userInfo: [Self.fileKey: file.path])
     }
 
+    func othersUnavailable(_ message: String) {
+        post(title: "Записую лише мікрофон", body: message, userInfo: [:])
+    }
+
     func failed(_ message: String) {
         post(title: "Зустріч не розшифровано", body: message, userInfo: [:])
     }

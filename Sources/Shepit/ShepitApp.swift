@@ -177,8 +177,20 @@ struct MenuContent: View {
                 MenuRow("Зупинити зустріч · \(TimerLabel.format(TimeInterval(meeting.elapsedSeconds)))", shortcut: shortcut) {
                     meeting.stop()
                 }
+            case .preparing:
+                MenuNote(title: "Готую запис зустрічі…", detail: nil)
             case .processing:
                 MenuNote(title: "Розшифровую зустріч…", detail: nil)
+            }
+            if let warning = meeting.othersWarning {
+                Label(warning, systemImage: "speaker.slash")
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(EdgeInsets(top: 0, leading: 10, bottom: 3, trailing: 10))
+                MenuRow("Дозволити запис системного звуку…") {
+                    NSWorkspace.shared.open(MeetingController.privacySettingsURL)
+                }
             }
             if let error = meeting.lastError, meeting.phase == .idle {
                 Text(error)

@@ -78,6 +78,78 @@ import ShepitCore
         #expect(markdown.contains("**[62:03] Me:** Наприкінці."))
     }
 
+    @Test func mergesMeAndOthersChronologically() {
+        let markdown = MeetingDocument.markdown(
+            me: [
+                TranscriptSegment(start: 2, end: 5, text: "Привіт, чути мене?"),
+                TranscriptSegment(start: 14, end: 18, text: "Тоді почнемо з бюджету."),
+            ],
+            others: [
+                TranscriptSegment(start: 6, end: 9, text: "Так, чудово чути."),
+                TranscriptSegment(start: 20, end: 25, text: "Бюджет готовий, надішлю після дзвінка."),
+            ],
+            metadata: Self.metadata(),
+            timeZone: Self.kyiv
+        )
+
+        #expect(markdown.hasSuffix("""
+        ## Transcript
+
+        **[00:02] Me:** Привіт, чути мене?
+
+        **[00:06] Others:** Так, чудово чути.
+
+        **[00:14] Me:** Тоді почнемо з бюджету.
+
+        **[00:20] Others:** Бюджет готовий, надішлю після дзвінка.
+
+        """))
+    }
+
+    /// Without headphones the microphone also hears the speakers, slightly later and less clearly.
+    @Test func echoOfOthersInMicrophoneWithinWindowIsDropped() {
+        let markdown = MeetingDocument.markdown(
+            me: [TranscriptSegment(start: 11.2, end: 15.8, text: "бюджет готовий надішлю після дзвінка")],
+            others: [TranscriptSegment(start: 10, end: 14.5, text: "Бюджет готовий, надішлю після дзвінка.")],
+            metadata: Self.metadata(),
+            timeZone: Self.kyiv
+        )
+
+        #expect(markdown.hasSuffix("## Transcript\n\n**[00:10] Others:** Бюджет готовий, надішлю після дзвінка.\n"))
+    }
+
+    @Test func sameTextOutsideEchoWindowIsKept() {
+        let markdown = MeetingDocument.markdown(
+            me: [TranscriptSegment(start: 12, end: 14, text: "Згоден, рухаємось далі.")],
+            others: [TranscriptSegment(start: 10, end: 11.5, text: "Згоден, рухаємось далі.")],
+            metadata: Self.metadata(),
+            timeZone: Self.kyiv
+        )
+
+        #expect(markdown.hasSuffix("""
+        **[00:10] Others:** Згоден, рухаємось далі.
+
+        **[00:12] Me:** Згоден, рухаємось далі.
+
+        """))
+    }
+
+    @Test func dissimilarOverlappingSpeechIsKept() {
+        let markdown = MeetingDocument.markdown(
+            me: [TranscriptSegment(start: 10.5, end: 13, text: "Секунду, я перепрошую.")],
+            others: [TranscriptSegment(start: 10, end: 14, text: "Отже, реліз переносимо на п'ятницю.")],
+            metadata: Self.metadata(),
+            timeZone: Self.kyiv
+        )
+
+        #expect(markdown.hasSuffix("""
+        **[00:10] Others:** Отже, реліз переносимо на п'ятницю.
+
+        **[00:10] Me:** Секунду, я перепрошую.
+
+        """))
+    }
+
     @Test func fileIsNamedFromDateTimeAndSource() {
         #expect(MeetingDocument.fileName(startDate: Self.startDate, app: "Zoom", timeZone: Self.kyiv)
             == "2026-09-13 14-30 Zoom.md")
