@@ -11,6 +11,7 @@ actor Transcriber {
         let folder = try await WhisperKit.download(variant: Self.modelName) { p in
             progress(p.fractionCompleted)
         }
+        Log.info("model files ready at \(folder.path)")
         let config = WhisperKitConfig(
             modelFolder: folder.path,
             verbose: false,

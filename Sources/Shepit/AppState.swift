@@ -81,19 +81,28 @@ final class AppState: ObservableObject {
     }
 
     private func setUp() async {
+        Log.info("launch; accessibility trusted=\(TextInserter.isTrusted), microphone=\(AVCaptureDevice.authorizationStatus(for: .audio).rawValue)")
         startKeyboardTapWhenTrusted()
-        _ = await AVCaptureDevice.requestAccess(for: .audio)
+        // Don't block model loading on the permission dialog.
+        Task {
+            let granted = await AVCaptureDevice.requestAccess(for: .audio)
+            Log.info("microphone access granted=\(granted)")
+        }
 
         do {
+            Log.info("model load started")
             try await transcriber.load { [weak self] progress in
                 Task { @MainActor in
+                    guard self?.modelReady == false else { return }
                     self?.status = .loadingModel("Модель: \(Int(progress * 100))%")
                 }
             }
             modelReady = true
             status = .idle
+            Log.info("model ready")
         } catch {
             status = .error("Модель не завантажилась: \(error.localizedDescription)")
+            Log.info("model load failed: \(error)")
         }
     }
 
@@ -105,6 +114,7 @@ final class AppState: ObservableObject {
                 try? await Task.sleep(for: .seconds(1))
             }
             hasAccessibility = true
+            Log.info("keyboard tap started")
         }
     }
 
