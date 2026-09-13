@@ -24,7 +24,7 @@ struct MenuContent: View {
             Label(state.status.title, systemImage: state.status.symbol)
                 .foregroundStyle(state.status.isError ? .red : .primary)
 
-            Text("Тримай **правий ⌥ Option**, говори, відпусти — текст вставиться в активне поле.")
+            Text("Тримай **правий ⌥ Option**, говори, відпусти — текст вставиться в активне поле й лишиться в буфері.\nНатисни **двічі** — запис без утримання, ⌥ щоб зупинити, esc щоб скасувати.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

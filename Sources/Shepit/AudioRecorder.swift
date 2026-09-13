@@ -8,6 +8,9 @@ final class AudioRecorder {
     private let lock = NSLock()
     private var samples: [Float] = []
 
+    /// Called on the main thread with the loudness (0...1) of each captured buffer.
+    var onLevel: ((Float) -> Void)?
+
     func start() throws {
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
@@ -39,6 +42,11 @@ final class AudioRecorder {
             guard let channel = output.floatChannelData?[0] else { return }
             let chunk = UnsafeBufferPointer(start: channel, count: Int(output.frameLength))
             self.lock.withLock { self.samples.append(contentsOf: chunk) }
+
+            if let onLevel = self.onLevel {
+                let level = Self.normalizedLevel(chunk)
+                DispatchQueue.main.async { onLevel(level) }
+            }
         }
 
         engine.prepare()
@@ -49,5 +57,13 @@ final class AudioRecorder {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         return lock.withLock { samples }
+    }
+
+    /// Maps RMS of a buffer from -50...0 dBFS onto 0...1.
+    private static func normalizedLevel(_ chunk: UnsafeBufferPointer<Float>) -> Float {
+        guard !chunk.isEmpty else { return 0 }
+        let rms = (chunk.reduce(0) { $0 + $1 * $1 } / Float(chunk.count)).squareRoot()
+        let decibels = 20 * log10(max(rms, 1e-6))
+        return min(max((decibels + 50) / 50, 0), 1)
     }
 }

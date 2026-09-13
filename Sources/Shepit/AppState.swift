@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import SwiftUI
+import ShepitCore
 
 enum Language: String, CaseIterable, Identifiable {
     case auto, uk, en, ru
@@ -57,29 +58,30 @@ final class AppState: ObservableObject {
 
     private let recorder = AudioRecorder()
     private let transcriber = Transcriber()
-    private var hotkey: HotkeyMonitor?
+    private let overlay = RecordingOverlay()
+    private var pushToTalk = PushToTalk()
+    private var keyboard: KeyboardTap?
+    private var ticker: Timer?
+    private var recordingStartedAt = Date()
     private var modelReady = false
+    private var isTranscribing = false
 
     init() {
-        hotkey = HotkeyMonitor { [weak self] pressed in
-            Task { @MainActor in pressed ? self?.startRecording() : self?.stopRecording() }
+        keyboard = KeyboardTap { [weak self] event in
+            MainActor.assumeIsolated { self?.handle(event) ?? false }
+        }
+        recorder.onLevel = { [weak self] level in
+            MainActor.assumeIsolated { self?.overlay.push(level: level) }
         }
         Task { await setUp() }
     }
 
     func requestAccessibility() {
         TextInserter.promptForTrust()
-        // The system dialog is async; poll briefly so the menu updates once granted.
-        Task {
-            for _ in 0..<60 where !TextInserter.isTrusted {
-                try? await Task.sleep(for: .seconds(1))
-            }
-            hasAccessibility = TextInserter.isTrusted
-        }
     }
 
     private func setUp() async {
-        if !hasAccessibility { requestAccessibility() }
+        startKeyboardTapWhenTrusted()
         _ = await AVCaptureDevice.requestAccess(for: .audio)
 
         do {
@@ -95,37 +97,90 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func startRecording() {
-        guard modelReady, status == .idle || status.isError else { return }
-        do {
-            try recorder.start()
-            status = .recording
-        } catch {
-            status = .error("Мікрофон: \(error.localizedDescription)")
+    /// The event tap can only be created once Accessibility is granted, so keep retrying.
+    private func startKeyboardTapWhenTrusted() {
+        if !TextInserter.isTrusted { requestAccessibility() }
+        Task {
+            while keyboard?.start() == false {
+                try? await Task.sleep(for: .seconds(1))
+            }
+            hasAccessibility = true
         }
     }
 
-    private func stopRecording() {
-        guard status == .recording else { return }
-        let samples = recorder.stop()
-        // Whisper hallucinates on very short clips; ignore accidental taps (< 0.3 s).
-        guard samples.count > Int(AudioRecorder.sampleRate * 0.3) else {
-            status = .idle
+    // MARK: - Push-to-talk
+
+    /// Returns true when the key event should be swallowed.
+    private func handle(_ event: PushToTalk.Event) -> Bool {
+        guard modelReady, !isTranscribing else { return false }
+        let wasRecording = pushToTalk.isRecording
+        pushToTalk.handle(event, at: ProcessInfo.processInfo.systemUptime).forEach(execute)
+        return event == .escape && wasRecording
+    }
+
+    private func execute(_ command: PushToTalk.Command) {
+        switch command {
+        case .start: startRecording()
+        case .enterHandsFree: overlay.show(.recording(handsFree: true, startedAt: recordingStartedAt))
+        case .finish: finishRecording()
+        case .cancel, .discard: abortRecording()
+        }
+    }
+
+    private func startRecording() {
+        do {
+            try recorder.start()
+        } catch {
+            pushToTalk = PushToTalk()
+            status = .error("Мікрофон: \(error.localizedDescription)")
             return
         }
+        recordingStartedAt = Date()
+        status = .recording
+        NSSound(named: "Tink")?.play()
+        overlay.show(.recording(handsFree: false, startedAt: recordingStartedAt))
+        ticker = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { _ = self?.handle(.tick) }
+        }
+    }
 
+    private func abortRecording() {
+        stopTicker()
+        _ = recorder.stop()
+        overlay.hide()
+        status = .idle
+    }
+
+    private func finishRecording() {
+        stopTicker()
+        let samples = recorder.stop()
+        NSSound(named: "Pop")?.play()
+
+        isTranscribing = true
         status = .transcribing
+        overlay.show(.transcribing)
         Task {
+            defer { isTranscribing = false }
             do {
                 let text = try await transcriber.transcribe(samples, language: language.whisperCode)
-                if !text.isEmpty {
-                    lastText = text
-                    TextInserter.insert(text)
+                guard !text.isEmpty else {
+                    overlay.show(.failure("Нічого не розпізнано"))
+                    status = .idle
+                    return
                 }
+                lastText = text
+                TextInserter.insert(text)
+                overlay.show(.success)
                 status = .idle
             } catch {
+                overlay.show(.failure("Нічого не розпізнано"))
                 status = .error("Розпізнавання: \(error.localizedDescription)")
             }
         }
+    }
+
+    private func stopTicker() {
+        ticker?.invalidate()
+        ticker = nil
     }
 }
